@@ -91,12 +91,18 @@ pub struct EventInit {
     pub props: Vec<(&'static str, Value)>,
 }
 
-thread_local! {
-    static EVENT_PROTOS: RefCell<std::collections::HashMap<(usize, &'static str), Obj>> = RefCell::new(std::collections::HashMap::new());
+type EventProtos = RefCell<std::collections::HashMap<&'static str, Obj>>;
+
+fn event_protos(it: &mut Interp) -> std::rc::Rc<EventProtos> {
+    if let Some(p) = it.ext.get("event_protos").cloned().and_then(|p| p.downcast::<EventProtos>().ok()) {
+        return p;
+    }
+    let p = std::rc::Rc::new(EventProtos::default());
+    it.ext.insert("event_protos", p.clone());
+    p
 }
 
 fn proto_for(it: &Interp, kind: &str) -> Option<Obj> {
-    let key = it.global.id();
     let k: &'static str = match kind {
         "MouseEvent" | "MouseEvents" | "PointerEvent" | "WheelEvent" | "DragEvent" => "MouseEvent",
         "KeyboardEvent" => "KeyboardEvent",
@@ -110,7 +116,9 @@ fn proto_for(it: &Interp, kind: &str) -> Option<Obj> {
         "ProgressEvent" => "ProgressEvent",
         _ => "Event",
     };
-    EVENT_PROTOS.with(|m| m.borrow().get(&(key, k)).cloned())
+    let protos = it.ext.get("event_protos")?.clone().downcast::<EventProtos>().ok()?;
+    let r = protos.borrow().get(k).cloned();
+    r
 }
 
 pub fn make_event(it: &mut Interp, ty: &str, kind: &str, init: &EventInit, trusted: bool) -> Value {
@@ -437,8 +445,8 @@ pub fn install(it: &mut Interp, p: &DomProtos) {
     for (k, v) in [("NONE", 0), ("CAPTURING_PHASE", 1), ("AT_TARGET", 2), ("BUBBLING_PHASE", 3)] {
         ep.set_hidden(k, Value::Num(v as f64));
     }
-    let key = it.global.id();
-    EVENT_PROTOS.with(|m| m.borrow_mut().insert((key, "Event"), ep.clone()));
+    let eprotos = event_protos(it);
+    eprotos.borrow_mut().insert("Event", ep.clone());
     let ector = it.define_ctor("Event", 1, &ep, |it, _this, args| {
         it.constructing = false;
         let ty = it.to_str(&arg(args, 0))?.to_string();
@@ -448,7 +456,7 @@ pub fn install(it: &mut Interp, p: &DomProtos) {
     for kind in ["CustomEvent", "UIEvent", "MouseEvent", "KeyboardEvent", "FocusEvent", "InputEvent", "SubmitEvent", "MessageEvent", "ErrorEvent", "ProgressEvent", "PointerEvent", "WheelEvent", "TouchEvent", "AnimationEvent", "TransitionEvent", "PopStateEvent", "HashChangeEvent", "StorageEvent", "ClipboardEvent", "DragEvent", "CompositionEvent", "PageTransitionEvent", "BeforeUnloadEvent", "PromiseRejectionEvent"] {
         let pr = Obj::new(ObjKind::Ordinary, Some(ep.clone()), "Event");
         let k: &'static str = kind;
-        EVENT_PROTOS.with(|m| m.borrow_mut().insert((key, k), pr.clone()));
+        eprotos.borrow_mut().insert(k, pr.clone());
         it.define_ctor(k, 1, &pr, move |it, _this, args| {
             it.constructing = false;
             let ty = it.to_str(&arg(args, 0))?.to_string();

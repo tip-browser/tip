@@ -36,13 +36,8 @@ pub struct DomProtos {
     pub event: Obj,
 }
 
-thread_local! {
-    static PROTOS: std::cell::RefCell<HashMap<usize, Rc<DomProtos>>> = std::cell::RefCell::new(HashMap::new());
-}
-
 fn protos(it: &Interp) -> Rc<DomProtos> {
-    let key = it.global.id();
-    PROTOS.with(|p| p.borrow().get(&key).cloned()).expect("DOM prototypes not installed")
+    it.ext.get("dom_protos").cloned().and_then(|p| p.downcast::<DomProtos>().ok()).expect("DOM prototypes not installed")
 }
 
 // ---------------------------------------------------------------- host objects
@@ -1668,8 +1663,7 @@ pub fn install(it: &mut Interp) {
     install_document_methods(it, &p);
     events::install(it, &p);
     let p = Rc::new(p);
-    let key = it.global.id();
-    PROTOS.with(|m| m.borrow_mut().insert(key, p.clone()));
+    it.ext.insert("dom_protos", p.clone());
 
     // constructors for instanceof checks
     let illegal = |name: &'static str| move |it: &mut Interp, _: Value, _: &[Value]| -> R<Value> { throw!(it, "TypeError", "Illegal constructor: {name}") };

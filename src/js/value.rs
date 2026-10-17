@@ -426,6 +426,13 @@ pub enum ObjKind {
     Arguments,
     TypedArray(TypedKind),
     ArrayBuffer(Rc<RefCell<Vec<u8>>>),
+    Proxy(Rc<ProxyData>),
+}
+
+pub struct ProxyData {
+    pub target: Obj,
+    /// `None` once revoked.
+    pub handler: RefCell<Option<Obj>>,
 }
 
 #[derive(Clone)]
@@ -542,10 +549,24 @@ impl Obj {
         Rc::ptr_eq(&self.0, &o.0)
     }
     pub fn is_callable(&self) -> bool {
-        matches!(self.borrow().kind, ObjKind::Function(_))
+        match &self.borrow().kind {
+            ObjKind::Function(_) => true,
+            ObjKind::Proxy(p) => p.target.is_callable(),
+            _ => false,
+        }
     }
     pub fn is_array(&self) -> bool {
-        matches!(self.borrow().kind, ObjKind::Array(_))
+        match &self.borrow().kind {
+            ObjKind::Array(_) => true,
+            ObjKind::Proxy(p) => p.target.is_array(),
+            _ => false,
+        }
+    }
+    pub fn proxy(&self) -> Option<Rc<ProxyData>> {
+        match &self.borrow().kind {
+            ObjKind::Proxy(p) => Some(p.clone()),
+            _ => None,
+        }
     }
     pub fn proto(&self) -> Option<Obj> {
         self.borrow().proto.clone()

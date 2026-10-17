@@ -7,6 +7,13 @@ use crate::js::value::*;
 
 pub fn define_property(it: &mut Interp, target: &Value, key: &Value, desc: &Value) -> R<()> {
     let Value::Obj(o) = target else { throw!(it, "TypeError", "Object.defineProperty called on non-object") };
+    if let Some(p) = o.proxy() {
+        let (h, trap) = it.proxy_trap(&p, "defineProperty")?;
+        return match trap {
+            Some(t) => it.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), key.clone(), desc.clone()]).map(|_| ()),
+            None => define_property(it, &Value::Obj(p.target.clone()), key, desc),
+        };
+    }
     let Value::Obj(_) = desc else { throw!(it, "TypeError", "Property description must be an object") };
     let k = it.to_key(key)?;
     let get = it.get_str(desc, "get")?;
@@ -44,6 +51,13 @@ pub fn define_property(it: &mut Interp, target: &Value, key: &Value, desc: &Valu
 }
 
 fn descriptor(it: &mut Interp, o: &Obj, k: &PropKey) -> R<Value> {
+    if let Some(p) = o.proxy() {
+        let (h, trap) = it.proxy_trap(&p, "getOwnPropertyDescriptor")?;
+        return match trap {
+            Some(t) => it.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), k.to_value()]),
+            None => descriptor(it, &p.target, k),
+        };
+    }
     let p = o.borrow().props.get(k).cloned();
     let d = it.new_object();
     match p {

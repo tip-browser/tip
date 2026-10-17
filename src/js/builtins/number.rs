@@ -191,26 +191,9 @@ pub fn setup(it: &mut Interp) {
         }
         Ok(Value::str(&num_to_radix(n, radix)))
     });
-    it.define_method(&np, "toLocaleString", 0, |it, this, _| {
+    it.define_method(&np, "toLocaleString", 0, |it, this, args| {
         let n = this_num(it, &this)?;
-        // en-US style grouping
-        let s = if n.fract() == 0.0 { format!("{}", n as i64) } else { to_fixed(n, 3).trim_end_matches('0').trim_end_matches('.').to_string() };
-        let (int, frac) = s.split_once('.').map(|(a, b)| (a.to_string(), Some(b.to_string()))).unwrap_or((s.clone(), None));
-        let neg = int.starts_with('-');
-        let digits: Vec<char> = int.trim_start_matches('-').chars().collect();
-        let mut out = String::new();
-        for (i, c) in digits.iter().enumerate() {
-            if i > 0 && (digits.len() - i) % 3 == 0 {
-                out.push(',');
-            }
-            out.push(*c);
-        }
-        let mut r = if neg { format!("-{out}") } else { out };
-        if let Some(f) = frac {
-            r.push('.');
-            r.push_str(&f);
-        }
-        Ok(Value::str(&r))
+        Ok(Value::str(&super::intl::number_to_locale_string(it, n, &arg(args, 0), &arg(args, 1))?))
     });
     it.define_method(&np, "valueOf", 0, |it, this, _| Ok(Value::Num(this_num(it, &this)?)));
     it.define_method(&np, "toFixed", 1, |it, this, args| {

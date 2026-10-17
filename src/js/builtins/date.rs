@@ -9,9 +9,12 @@ pub fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0)
 }
 
-/// Local time zone offset in minutes (UTC - local), as JS getTimezoneOffset.
-pub fn tz_offset_min() -> f64 {
-    std::env::var("TIP_TZ_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0)
+/// Local time zone offset in minutes (UTC - local) at UTC time `t`, as JS getTimezoneOffset.
+pub fn tz_offset_min(t: f64) -> f64 {
+    if !t.is_finite() {
+        return f64::NAN;
+    }
+    -(super::tz::local().at((t / 1000.0).floor() as i64).off as f64) / 60.0
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -77,11 +80,14 @@ pub fn parts(t: f64) -> Parts {
 }
 
 fn local(t: f64) -> f64 {
-    t - tz_offset_min() * 60_000.0
+    t - tz_offset_min(t) * 60_000.0
 }
 
 fn utc_of_local(t: f64) -> f64 {
-    t + tz_offset_min() * 60_000.0
+    if !t.is_finite() {
+        return t;
+    }
+    t - super::tz::local().offset_for_local((t / 1000.0).floor() as i64) as f64 * 1000.0
 }
 
 pub fn to_iso(t: f64) -> Option<String> {
@@ -96,11 +102,13 @@ pub fn to_iso(t: f64) -> Option<String> {
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-fn tz_string() -> String {
-    let off = -tz_offset_min();
+fn tz_string(t: f64) -> String {
+    let off = -tz_offset_min(t);
     let sign = if off >= 0.0 { '+' } else { '-' };
     let a = off.abs() as i64;
-    format!("GMT{sign}{:02}{:02}", a / 60, a % 60)
+    let lt = super::tz::local().at((t / 1000.0).floor() as i64);
+    let name = super::intl::create_dtf_name(&lt);
+    format!("GMT{sign}{:02}{:02} ({name})", a / 60, a % 60)
 }
 
 fn to_string(t: f64) -> String {
@@ -108,7 +116,7 @@ fn to_string(t: f64) -> String {
         return "Invalid Date".into();
     }
     let p = parts(local(t));
-    format!("{} {} {:02} {:04} {:02}:{:02}:{:02} {}", DAYS[p.weekday as usize], MONTHS[p.month as usize], p.day, p.year, p.hour, p.min, p.sec, tz_string())
+    format!("{} {} {:02} {:04} {:02}:{:02}:{:02} {}", DAYS[p.weekday as usize], MONTHS[p.month as usize], p.day, p.year, p.hour, p.min, p.sec, tz_string(t))
 }
 
 /// Parse ISO 8601 and the common RFC 2822-ish formats.
@@ -327,7 +335,10 @@ pub fn setup(it: &mut Interp) {
     });
     it.define_method(&dp, "getTime", 0, |it, this, _| Ok(Value::Num(this_time(it, &this)?)));
     it.define_method(&dp, "valueOf", 0, |it, this, _| Ok(Value::Num(this_time(it, &this)?)));
-    it.define_method(&dp, "getTimezoneOffset", 0, |_, _, _| Ok(Value::Num(tz_offset_min())));
+    it.define_method(&dp, "getTimezoneOffset", 0, |it, this, _| {
+        let t = this_time(it, &this)?;
+        Ok(Value::Num(tz_offset_min(t)))
+    });
     it.define_method(&dp, "setTime", 1, |it, this, args| {
         this_time(it, &this)?;
         let t = it.to_number(&arg(args, 0))?;
@@ -392,25 +403,15 @@ pub fn setup(it: &mut Interp) {
     it.define_method(&dp, "toTimeString", 0, |it, this, _| {
         let t = this_time(it, &this)?;
         let p = parts(local(t));
-        Ok(Value::str(&format!("{:02}:{:02}:{:02} {}", p.hour, p.min, p.sec, tz_string())))
+        Ok(Value::str(&format!("{:02}:{:02}:{:02} {}", p.hour, p.min, p.sec, tz_string(t))))
     });
-    it.define_method(&dp, "toLocaleDateString", 0, |it, this, _| {
-        let t = this_time(it, &this)?;
-        let p = parts(local(t));
-        Ok(Value::str(&format!("{}/{}/{}", p.month + 1, p.day, p.year)))
-    });
-    it.define_method(&dp, "toLocaleTimeString", 0, |it, this, _| {
-        let t = this_time(it, &this)?;
-        let p = parts(local(t));
-        let h12 = if p.hour % 12 == 0 { 12 } else { p.hour % 12 };
-        Ok(Value::str(&format!("{}:{:02}:{:02} {}", h12, p.min, p.sec, if p.hour < 12 { "AM" } else { "PM" })))
-    });
-    it.define_method(&dp, "toLocaleString", 0, |it, this, _| {
-        let t = this_time(it, &this)?;
-        let p = parts(local(t));
-        let h12 = if p.hour % 12 == 0 { 12 } else { p.hour % 12 };
-        Ok(Value::str(&format!("{}/{}/{}, {}:{:02}:{:02} {}", p.month + 1, p.day, p.year, h12, p.min, p.sec, if p.hour < 12 { "AM" } else { "PM" })))
-    });
+    use super::intl::{date_to_locale_string, DtfDefaults};
+    for (name, defaults) in [("toLocaleDateString", DtfDefaults::Date), ("toLocaleTimeString", DtfDefaults::Time), ("toLocaleString", DtfDefaults::All)] {
+        it.define_method(&dp, name, 0, move |it, this, args| {
+            let t = this_time(it, &this)?;
+            Ok(Value::str(&date_to_locale_string(it, t, &arg(args, 0), &arg(args, 1), defaults)?))
+        });
+    }
     let tp = it.sym_to_primitive.clone();
     it.define_method_sym(&dp, &tp, "[Symbol.toPrimitive]", |it, this, args| {
         let hint = it.to_str(&arg(args, 0))?;

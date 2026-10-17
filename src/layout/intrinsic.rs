@@ -14,7 +14,7 @@ pub(crate) fn intrinsic(b: &LayoutBox, st: &State) -> (f32, f32) {
     v
 }
 
-fn px_edges(b: &LayoutBox) -> f32 {
+pub(crate) fn px_edges(b: &LayoutBox) -> f32 {
     let s = &b.style;
     let pad = s.padding[1].resolve(0.0).unwrap_or(0.0) + s.padding[3].resolve(0.0).unwrap_or(0.0);
     pad + s.effective_border(1) + s.effective_border(3)

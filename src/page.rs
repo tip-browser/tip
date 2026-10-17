@@ -145,6 +145,7 @@ pub struct PageHost {
     pub listener_objects: HashMap<usize, Value>,
     pub current_script: Option<NodeId>,
     pub pending_fetches: Vec<crate::bindings::window::PendingFetch>,
+    pub event_sources: Vec<crate::bindings::window::EventSourceConn>,
     pub net_log_pending: Vec<(String, String, Instant)>,
     pub mutation_observers: Vec<MutationObs>,
     pub history_len: usize,
@@ -227,6 +228,7 @@ impl PageHost {
             listener_objects: HashMap::new(),
             current_script: None,
             pending_fetches: vec![],
+            event_sources: vec![],
             net_log_pending: vec![],
             mutation_observers: vec![],
             history_len: 1,
@@ -1237,7 +1239,7 @@ impl Page {
     /// Process background work: images, fetches, timers. Returns true if a repaint is needed.
     pub fn poll(&mut self) -> bool {
         let a = self.host_mut().poll_images();
-        let f = crate::bindings::window::poll_fetches(&mut self.interp);
+        let f = crate::bindings::window::poll_fetches(&mut self.interp) | crate::bindings::window::poll_event_sources(&mut self.interp);
         if f {
             self.after_task();
         }

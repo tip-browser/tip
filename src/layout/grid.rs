@@ -140,6 +140,36 @@ fn size_tracks(tracks: &[Track], avail: Option<f32>, gap: f32, content: &[(f32, 
     out
 }
 
+fn is_flexible(t: &Track) -> bool {
+    match t {
+        Track::Fr(_) => true,
+        Track::MinMax(_, b) => matches!(**b, Track::Fr(_)),
+        _ => false,
+    }
+}
+
+/// An item's minimum contribution: its `min-width` if set, zero content for scroll
+/// containers, otherwise its min-content size (`mn`, margin box).
+fn min_contribution(c: &LayoutBox, mn: f32) -> f32 {
+    let s = &c.style;
+    let margins = s.margin[1].resolve(0.0).unwrap_or(0.0) + s.margin[3].resolve(0.0).unwrap_or(0.0);
+    let edges = intrinsic::px_edges(c);
+    if !s.min_width.is_auto() {
+        let mw = s.min_width.resolve(0.0).unwrap_or(0.0);
+        let w = if s.border_box { mw.max(edges) } else { mw + edges };
+        // an explicit width still sets the floor
+        let fixed = match s.width {
+            crate::style::Len::Val(px, 0.0) => Some(if s.border_box { px } else { px + edges }),
+            _ => None,
+        };
+        return fixed.map_or(w, |f| f.max(w)) + margins;
+    }
+    if !matches!(s.overflow_x, crate::style::Overflow::Visible) {
+        return edges + margins;
+    }
+    mn
+}
+
 fn justify_of(c: &LayoutBox, s: &crate::style::ComputedStyle) -> Align {
     match c.style.justify_self {
         Align::Auto => match s.justify_items {
@@ -260,7 +290,9 @@ pub(crate) fn layout_grid(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
     let mut ccontent = vec![(0f32, 0f32); ncols];
     for p in &place {
         if p.cspan == 1 {
-            let (mn, mx) = intrinsic::outer(&b.children[p.idx], st);
+            let c = &b.children[p.idx];
+            let (mn, mx) = intrinsic::outer(c, st);
+            let mn = min_contribution(c, mn);
             ccontent[p.col].0 = ccontent[p.col].0.max(mn);
             ccontent[p.col].1 = ccontent[p.col].1.max(mx);
         }
@@ -295,7 +327,7 @@ pub(crate) fn layout_grid(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
     while rtracks.len() < nrows {
         rtracks.push(Track::Auto);
     }
-    let has_fr_rows = rtracks.iter().any(|t| matches!(t, Track::Fr(_)));
+    let has_fr_rows = rtracks.iter().any(is_flexible);
     let mut row_h = size_tracks(&rtracks, if has_fr_rows { def_h } else { None }, rgap, &rcontent);
     // multi-row items: grow the last spanned row if needed
     for (k, p) in place.iter().enumerate() {

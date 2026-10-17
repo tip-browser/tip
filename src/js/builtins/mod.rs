@@ -3,6 +3,8 @@
 pub mod array;
 pub mod collections;
 pub mod date;
+pub mod intl;
+pub mod tz;
 pub mod json;
 pub mod number;
 pub mod object;
@@ -35,6 +37,7 @@ pub fn setup(it: &mut Interp) {
     collections::setup(it);
     regexp::setup(it);
     date::setup(it);
+    intl::setup(it);
     typed::setup(it);
     iterator_setup(it);
     globals_setup(it);
@@ -466,6 +469,7 @@ fn globals_setup(it: &mut Interp) {
         let Value::Str(s) = src else { return Ok(src) };
         it.eval_script(&s, "eval")
     });
+    proxy_setup(it);
     let reflect = it.new_object();
     g.set_hidden("Reflect", Value::Obj(reflect.clone()));
     it.define_method(&reflect, "apply", 3, |it, _, args| {
@@ -519,6 +523,39 @@ fn globals_setup(it: &mut Interp) {
         let k = it.to_key(&arg(args, 1))?;
         Ok(Value::Bool(it.delete(&arg(args, 0), &k)?))
     });
+}
+
+// ---------------------------------------------------------------- Proxy
+
+fn new_proxy(it: &mut Interp, target: &Value, handler: &Value) -> R<Obj> {
+    let (Value::Obj(t), Value::Obj(h)) = (target, handler) else {
+        throw!(it, "TypeError", "Cannot create proxy with a non-object as target or handler")
+    };
+    let proto = t.proto();
+    let data = Rc::new(ProxyData { target: t.clone(), handler: std::cell::RefCell::new(Some(h.clone())) });
+    Ok(Obj::new(ObjKind::Proxy(data), proto, "Proxy"))
+}
+
+fn proxy_setup(it: &mut Interp) {
+    let ctor = it.new_native("Proxy", 2, Rc::new(|it: &mut Interp, _this: Value, args: &[Value]| {
+        if !std::mem::replace(&mut it.constructing, false) {
+            throw!(it, "TypeError", "Constructor Proxy requires 'new'");
+        }
+        Ok(Value::Obj(new_proxy(it, &arg(args, 0), &arg(args, 1))?))
+    }), true);
+    it.define_method(&ctor, "revocable", 2, |it, _, args| {
+        let p = new_proxy(it, &arg(args, 0), &arg(args, 1))?;
+        let data = p.proxy().unwrap();
+        let revoke = it.native("", 0, move |_, _, _| {
+            *data.handler.borrow_mut() = None;
+            Ok(Value::Undefined)
+        });
+        let out = it.new_object();
+        out.set_prop("proxy", Value::Obj(p));
+        out.set_prop("revoke", revoke);
+        Ok(Value::Obj(out))
+    });
+    it.global.set_hidden("Proxy", Value::Obj(ctor));
 }
 
 // ---------------------------------------------------------------- console

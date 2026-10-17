@@ -51,6 +51,14 @@ impl Scope {
     }
 }
 
+/// A property key as a JS value (string or symbol), for proxy traps.
+pub fn key_value(k: &PropKey) -> Value {
+    match k {
+        PropKey::Str(s) => Value::Str(s.clone()),
+        PropKey::Sym(s) => Value::Sym(s.clone()),
+    }
+}
+
 /// Read a binding by name from one scope, following import links.
 pub fn read_binding(env: &Env, name: &str) -> Option<Value> {
     let mut link = {
@@ -161,6 +169,8 @@ pub struct Interp {
     /// ES module map keyed by URL.
     pub modules: HashMap<String, super::module::ModRef>,
     pub module_loader: Option<Rc<dyn super::module::ModuleLoader>>,
+    /// Embedder data that must be reachable from any coroutine thread (not thread-local).
+    pub ext: HashMap<&'static str, Rc<dyn Any>>,
 }
 
 macro_rules! throw {
@@ -242,6 +252,7 @@ impl Interp {
             deadline: None,
             modules: HashMap::new(),
             module_loader: None,
+            ext: HashMap::new(),
             steps: 0,
             unhandled: vec![],
             coroutines: vec![],
@@ -558,6 +569,21 @@ impl Interp {
         }
     }
 
+    /// The proxy's handler and its trap `name` (if defined). Throws if the proxy was revoked.
+    pub fn proxy_trap(&mut self, p: &ProxyData, name: &str) -> R<(Obj, Option<Value>)> {
+        let Some(h) = p.handler.borrow().clone() else {
+            throw!(self, "TypeError", "Cannot perform '{name}' on a proxy that has been revoked")
+        };
+        let t = self.get_from(&h, &PropKey::from(name), &Value::Obj(h.clone()))?;
+        if t.is_nullish() {
+            return Ok((h, None));
+        }
+        if !t.is_callable() {
+            throw!(self, "TypeError", "proxy trap '{name}' is not a function");
+        }
+        Ok((h, Some(t)))
+    }
+
     pub fn get_str(&mut self, v: &Value, key: &str) -> R<Value> {
         self.get(v, &PropKey::from(key))
     }
@@ -565,6 +591,16 @@ impl Interp {
     pub fn get_from(&mut self, o: &Obj, key: &PropKey, receiver: &Value) -> R<Value> {
         let mut cur = o.clone();
         for _ in 0..10_000 {
+            if let Some(p) = cur.proxy() {
+                let (h, trap) = self.proxy_trap(&p, "get")?;
+                return match trap {
+                    Some(t) => {
+                        let k = key_value(key);
+                        self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), k, receiver.clone()])
+                    }
+                    None => self.get_from(&p.target, key, receiver),
+                };
+            }
             // exotic / host behaviour
             let host = {
                 let b = cur.borrow();
@@ -642,6 +678,13 @@ impl Interp {
     pub fn has_property(&mut self, o: &Obj, key: &PropKey) -> bool {
         let mut cur = Some(o.clone());
         while let Some(c) = cur {
+            if let Some(p) = c.proxy() {
+                return match self.proxy_trap(&p, "has") {
+                    Ok((h, Some(t))) => self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), key_value(key)]).is_ok_and(|v| v.truthy()),
+                    Ok((_, None)) => self.has_property(&p.target, key),
+                    Err(_) => false,
+                };
+            }
             if self.has_own(&c, key) {
                 return true;
             }
@@ -651,6 +694,13 @@ impl Interp {
     }
 
     pub fn has_own(&mut self, o: &Obj, key: &PropKey) -> bool {
+        if let Some(p) = o.proxy() {
+            return match self.proxy_trap(&p, "getOwnPropertyDescriptor") {
+                Ok((h, Some(t))) => self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), key_value(key)]).is_ok_and(|v| !v.is_undefined()),
+                Ok((_, None)) => self.has_own(&p.target, key),
+                Err(_) => false,
+            };
+        }
         let host = {
             let b = o.borrow();
             if b.props.contains(key) {
@@ -678,6 +728,16 @@ impl Interp {
             }
             return Ok(());
         };
+        if let Some(p) = o.proxy() {
+            let (h, trap) = self.proxy_trap(&p, "set")?;
+            return match trap {
+                Some(t) => {
+                    let k = key_value(&key);
+                    self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), k, value, target.clone()]).map(|_| ())
+                }
+                None => self.set(&Value::Obj(p.target.clone()), key, value),
+            };
+        }
         // exotic
         let host = {
             let mut b = o.borrow_mut();
@@ -771,6 +831,13 @@ impl Interp {
 
     pub fn delete(&mut self, target: &Value, key: &PropKey) -> R<bool> {
         let Value::Obj(o) = target else { return Ok(true) };
+        if let Some(p) = o.proxy() {
+            let (h, trap) = self.proxy_trap(&p, "deleteProperty")?;
+            return match trap {
+                Some(t) => Ok(self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), key_value(key)])?.truthy()),
+                None => self.delete(&Value::Obj(p.target.clone()), key),
+            };
+        }
         let mut b = o.borrow_mut();
         if b.frozen {
             return Ok(false);
@@ -794,6 +861,25 @@ impl Interp {
 
     /// Own enumerable string keys (for Object.keys / for-in / spread).
     pub fn own_keys(&mut self, o: &Obj, include_hidden: bool) -> Vec<PropKey> {
+        if let Some(p) = o.proxy() {
+            let (h, trap) = match self.proxy_trap(&p, "ownKeys") {
+                Ok(r) => r,
+                Err(_) => return vec![],
+            };
+            let Some(t) = trap else { return self.own_keys(&p.target, include_hidden) };
+            let Ok(list) = self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone())]) else { return vec![] };
+            let items = self.iterate_to_vec(&list).unwrap_or_default();
+            let target_keys = if include_hidden { None } else { Some(self.own_keys(&p.target, false)) };
+            return items
+                .into_iter()
+                .filter_map(|v| match v {
+                    Value::Str(s) => Some(PropKey::Str(s)),
+                    _ => None,
+                })
+                // only enumerable keys unless hidden ones were requested
+                .filter(|k| target_keys.as_ref().is_none_or(|tk| tk.contains(k) || !p.target.borrow().props.contains(k)))
+                .collect();
+        }
         let (mut out, host) = {
             let b = o.borrow();
             let mut out: Vec<PropKey> = Vec::new();
@@ -833,6 +919,16 @@ impl Interp {
             Native(NativeFn),
             Bound(Obj, Value, Vec<Value>),
         }
+        if let Some(p) = fo.proxy() {
+            let (h, trap) = self.proxy_trap(&p, "apply")?;
+            return match trap {
+                Some(t) => {
+                    let arr = self.new_array(args.to_vec());
+                    self.call(&t, Value::Obj(h), &[Value::Obj(p.target.clone()), this, arr])
+                }
+                None => self.call(&Value::Obj(p.target.clone()), this, args),
+            };
+        }
         let k = match &fo.borrow().kind {
             ObjKind::Function(Func::Closure(c)) => K::Closure(c.clone()),
             ObjKind::Function(Func::Native { f, .. }) => K::Native(f.clone()),
@@ -870,6 +966,22 @@ impl Interp {
             throw!(self, "TypeError", "{} is not a constructor", self.short_desc(f));
         };
         let nt = new_target.cloned().unwrap_or_else(|| f.clone());
+        if let Some(p) = fo.proxy() {
+            let (h, trap) = self.proxy_trap(&p, "construct")?;
+            let target = Value::Obj(p.target.clone());
+            let nt = if nt.as_obj().is_some_and(|o| o.ptr_eq(fo)) { target.clone() } else { nt };
+            return match trap {
+                Some(t) => {
+                    let arr = self.new_array(args.to_vec());
+                    let r = self.call(&t, Value::Obj(h), &[target, arr, nt])?;
+                    if !matches!(r, Value::Obj(_)) {
+                        throw!(self, "TypeError", "proxy [[Construct]] must return an object");
+                    }
+                    Ok(r)
+                }
+                None => self.construct(&target, args, Some(&nt)),
+            };
+        }
         enum K {
             Closure(Rc<Closure>),
             Native(NativeFn),

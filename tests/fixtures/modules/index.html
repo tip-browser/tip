@@ -1,0 +1,16 @@
+<!doctype html><body><div id=out></div>
+<script type="module">
+import { add, counter, inc } from "./lib/math.js?v=1";
+import def, * as ns from "./lib/math.js?v=1";
+import { b } from "./lib/cycle-a.js";
+const out = [];
+out.push(add(2, 3), counter);
+inc(); out.push(counter);
+out.push(def(), Object.keys(ns).join(","), ns[Symbol.toStringTag]);
+out.push(b());
+out.push(import.meta.url.endsWith("index.html"));
+document.getElementById("out").textContent = out.join("|");
+const m = await import("./lib/dyn.js");
+document.getElementById("out").textContent += "|" + m.default + "|" + m.re.x;
+</script>
+<script>document.body.append("classic-first;")</script>

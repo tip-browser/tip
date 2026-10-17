@@ -283,15 +283,7 @@ pub fn setup(it: &mut Interp) {
     it.define_method(&sp, "localeCompare", 1, |it, this, args| {
         let a = this_str(it, &this)?;
         let b = it.to_str(&arg(args, 0))?;
-        // approximate locale collation: case-insensitive first, then by code point
-        let ka = a.to_lowercase();
-        let kb = b.to_lowercase();
-        let o = ka.cmp(&kb).then_with(|| b.cmp(&a));
-        Ok(Value::Num(match o {
-            std::cmp::Ordering::Less => -1.0,
-            std::cmp::Ordering::Equal => 0.0,
-            std::cmp::Ordering::Greater => 1.0,
-        }))
+        super::intl::locale_compare(it, &a, &b, &arg(args, 1), &arg(args, 2))
     });
     it.define_method(&sp, "normalize", 0, |it, this, _| Ok(Value::Str(this_str(it, &this)?)));
     it.define_method(&sp, "isWellFormed", 0, |_, _, _| Ok(Value::Bool(true)));

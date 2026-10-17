@@ -337,6 +337,219 @@ fn navigate(h: &mut crate::page::PageHost, url: Url, replace: bool) {
 
 // ---------------------------------------------------------------- fetch / XHR
 
+/// A live EventSource connection; dropping it stops the network thread.
+pub struct EventSourceConn {
+    pub obj: Value,
+    rx: std::sync::mpsc::Receiver<SseEvent>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for EventSourceConn {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+enum SseEvent {
+    Open,
+    Message { ty: String, data: String, id: String },
+    Error { fatal: bool },
+}
+
+/// Incremental `text/event-stream` parser.
+#[derive(Default)]
+struct SseParser {
+    line: Vec<u8>,
+    data: String,
+    has_data: bool,
+    event: String,
+    last_id: String,
+    retry: Option<u64>,
+    skip_lf: bool,
+}
+
+impl SseParser {
+    fn feed(&mut self, bytes: &[u8], out: &mut Vec<SseEvent>) {
+        for &b in bytes {
+            if self.skip_lf {
+                self.skip_lf = false;
+                if b == b'\n' {
+                    continue;
+                }
+            }
+            if b == b'\r' || b == b'\n' {
+                self.skip_lf = b == b'\r';
+                let line = String::from_utf8_lossy(&std::mem::take(&mut self.line)).into_owned();
+                self.line_done(&line, out);
+            } else {
+                self.line.push(b);
+            }
+        }
+    }
+
+    fn line_done(&mut self, line: &str, out: &mut Vec<SseEvent>) {
+        if line.is_empty() {
+            if self.has_data {
+                let mut data = std::mem::take(&mut self.data);
+                if data.ends_with('\n') {
+                    data.pop();
+                }
+                let ty = if self.event.is_empty() { "message".to_string() } else { self.event.clone() };
+                out.push(SseEvent::Message { ty, data, id: self.last_id.clone() });
+            }
+            self.data.clear();
+            self.has_data = false;
+            self.event.clear();
+            return;
+        }
+        if line.starts_with(':') {
+            return;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        match field {
+            "data" => {
+                self.data.push_str(value);
+                self.data.push('\n');
+                self.has_data = true;
+            }
+            "event" => self.event = value.to_string(),
+            "id" if !value.contains('\0') => self.last_id = value.to_string(),
+            "retry" => {
+                if let Ok(n) = value.parse() {
+                    self.retry = Some(n);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn start_event_source(url: Url, origin: String, obj: Value) -> EventSourceConn {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    std::thread::spawn(move || {
+        let mut parser = SseParser::default();
+        let mut retry = 3000u64;
+        loop {
+            if c2.load(Ordering::Relaxed) {
+                return;
+            }
+            let mut headers = vec![("Accept".to_string(), "text/event-stream".to_string()), ("Cache-Control".to_string(), "no-cache".to_string())];
+            if !parser.last_id.is_empty() {
+                headers.push(("Last-Event-ID".to_string(), parser.last_id.clone()));
+            }
+            if url.origin() != origin {
+                headers.push(("Origin".to_string(), origin.clone()));
+            }
+            let req = Request { method: "GET".into(), url: url.clone(), headers, body: None };
+            let mut fatal = false;
+            let r = if url.scheme == "http" {
+                net::http::stream(&req, &url, &c2, &mut |m| match m {
+                    net::http::StreamMsg::Head { status, headers } => {
+                        let ct = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|(_, v)| v.to_ascii_lowercase()).unwrap_or_default();
+                        if status != 200 || !ct.contains("text/event-stream") {
+                            fatal = status != 200 && status != 204 || !ct.contains("text/event-stream");
+                            return false;
+                        }
+                        parser = SseParser { last_id: std::mem::take(&mut parser.last_id), ..Default::default() };
+                        tx.send(SseEvent::Open).is_ok()
+                    }
+                    net::http::StreamMsg::Data(bytes) => {
+                        let mut evs = Vec::new();
+                        parser.feed(bytes, &mut evs);
+                        if let Some(r) = parser.retry.take() {
+                            retry = r;
+                        }
+                        evs.into_iter().all(|e| tx.send(e).is_ok())
+                    }
+                })
+            } else {
+                // other schemes: fetch the whole response and replay it
+                match net::fetch(&req) {
+                    Ok(resp) if resp.status == 200 && resp.mime().0.contains("text/event-stream") => {
+                        let _ = tx.send(SseEvent::Open);
+                        let mut evs = Vec::new();
+                        parser.feed(&resp.body, &mut evs);
+                        parser.feed(b"\n\n", &mut evs);
+                        for e in evs {
+                            let _ = tx.send(e);
+                        }
+                        Ok(())
+                    }
+                    Ok(_) => {
+                        fatal = true;
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+            let _ = r;
+            if c2.load(Ordering::Relaxed) {
+                return;
+            }
+            if tx.send(SseEvent::Error { fatal }).is_err() || fatal {
+                return;
+            }
+            let until = Instant::now() + Duration::from_millis(retry);
+            while Instant::now() < until {
+                if c2.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+    EventSourceConn { obj, rx, cancel }
+}
+
+/// Deliver EventSource events to script. Returns true if any were dispatched.
+pub fn poll_event_sources(it: &mut Interp) -> bool {
+    let mut evs: Vec<(Value, SseEvent)> = Vec::new();
+    for c in &ph(it).event_sources {
+        while let Ok(e) = c.rx.try_recv() {
+            evs.push((c.obj.clone(), e));
+            if evs.len() > 500 {
+                break;
+            }
+        }
+    }
+    if evs.is_empty() {
+        return false;
+    }
+    let origin = ph(it).url.origin();
+    for (obj, e) in evs {
+        let Value::Obj(o) = &obj else { continue };
+        if o.get_own("readyState").is_some_and(|v| matches!(v, Value::Num(n) if n == 2.0)) {
+            continue;
+        }
+        let target = events::target_of(it, &obj);
+        match e {
+            SseEvent::Open => {
+                o.set_prop("readyState", Value::Num(1.0));
+                events::fire(it, target, "open", "Event", EventInit::default());
+            }
+            SseEvent::Message { ty, data, id } => {
+                let init = EventInit { props: vec![("data", s(data)), ("lastEventId", s(id)), ("origin", s(origin.clone()))], ..Default::default() };
+                events::fire(it, target, &ty, "MessageEvent", init);
+            }
+            SseEvent::Error { fatal } => {
+                o.set_prop("readyState", Value::Num(if fatal { 2.0 } else { 0.0 }));
+                if fatal {
+                    ph(it).event_sources.retain(|c| !matches!(&c.obj, Value::Obj(x) if x.ptr_eq(o)));
+                }
+                events::fire(it, target, "error", "Event", EventInit::default());
+            }
+        }
+        it.run_microtasks();
+    }
+    true
+}
+
 pub struct PendingFetch {
     pub rx: std::sync::mpsc::Receiver<Result<net::Response, String>>,
     pub on_done: Value,
@@ -1480,7 +1693,7 @@ pub fn install(it: &mut Interp) {
     }
     g.set_hidden("Option", opt_ctor);
 
-    // EventSource: accepted and kept CONNECTING (server-sent events are not streamed yet)
+    // EventSource: server-sent events streamed on a background thread
     let esp = it.new_object();
     if let Some(Value::Obj(e)) = it.global.get_own("EventTarget").and_then(|c| c.as_obj().and_then(|c| c.get_own("prototype"))) {
         esp.borrow_mut().proto = Some(e);
@@ -1488,23 +1701,32 @@ pub fn install(it: &mut Interp) {
     let es_ctor = it.define_ctor("EventSource", 1, &esp, |it, this, args| {
         it.constructing = false;
         let u = it.to_string_lossy(&arg(args, 0));
+        let Some(url) = ph(it).resolve_url(&u) else { throw!(it, "SyntaxError", "Failed to construct 'EventSource': The URL '{u}' is invalid.") };
+        let with_credentials = match arg(args, 1) {
+            v @ Value::Obj(_) => it.get_str(&v, "withCredentials")?.truthy(),
+            _ => false,
+        };
         if let Value::Obj(o) = &this {
-            let abs = ph(it).resolve_url(&u).map(|x| x.to_string()).unwrap_or(u);
-            o.set_prop("url", s(abs));
+            o.set_prop("url", s(url.to_string()));
             o.set_prop("readyState", Value::Num(0.0));
-            o.set_prop("withCredentials", Value::Bool(false));
+            o.set_prop("withCredentials", Value::Bool(with_credentials));
             o.set_prop("onmessage", Value::Null);
             o.set_prop("onerror", Value::Null);
             o.set_prop("onopen", Value::Null);
+            ph(it).listener_objects.insert(o.id(), this.clone());
+            let conn = start_event_source(url, ph(it).url.origin(), this.clone());
+            ph(it).event_sources.push(conn);
         }
         Ok(this)
     });
     for (k, v) in [("CONNECTING", 0.0), ("OPEN", 1.0), ("CLOSED", 2.0)] {
         es_ctor.set_hidden(k, Value::Num(v));
+        esp.set_hidden(k, Value::Num(v));
     }
-    it.define_method(&esp, "close", 0, |_, this, _| {
+    it.define_method(&esp, "close", 0, |it, this, _| {
         if let Value::Obj(o) = &this {
             o.set_prop("readyState", Value::Num(2.0));
+            ph(it).event_sources.retain(|c| !matches!(&c.obj, Value::Obj(x) if x.ptr_eq(o)));
         }
         Ok(Value::Undefined)
     });
