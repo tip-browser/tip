@@ -1027,6 +1027,8 @@ pub struct MatchState {
     pub hover: Option<NodeId>,
     pub focus: Option<NodeId>,
     pub active: Option<NodeId>,
+    /// Whether the focused element shows a focus ring (`:focus-visible`).
+    pub focus_visible: bool,
 }
 
 pub fn matches_any(doc: &Document, node: NodeId, sels: &[Selector], st: &MatchState) -> bool {
@@ -1143,7 +1145,8 @@ fn matches_pseudo(doc: &Document, node: NodeId, p: &Pseudo, st: &MatchState) -> 
     match p {
         Pseudo::Hover => st.hover.is_some_and(|h| doc.is_ancestor(node, h)),
         Pseudo::Active => st.active.is_some_and(|h| doc.is_ancestor(node, h)),
-        Pseudo::Focus | Pseudo::FocusVisible => st.focus == Some(node),
+        Pseudo::Focus => st.focus == Some(node),
+        Pseudo::FocusVisible => st.focus_visible && st.focus == Some(node),
         Pseudo::FocusWithin => st.focus.is_some_and(|f| doc.is_ancestor(node, f)),
         Pseudo::FirstChild => sibling_position(doc, node, false, false).0 == 1,
         Pseudo::LastChild => sibling_position(doc, node, false, true).0 == 1,

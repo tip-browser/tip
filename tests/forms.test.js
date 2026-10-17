@@ -119,3 +119,37 @@ describe('range sliders', () => {
     expect(page.evaluate(() => { const v = document.getElementById('vol'); v.value = 500; return v.value; })).toBe('100');
   });
 });
+
+describe(':focus-visible', () => {
+  const vis = (sel) => page.evaluate(`document.querySelector('${sel}').matches(':focus-visible')`);
+  const foc = (sel) => page.evaluate(`document.querySelector('${sel}').matches(':focus')`);
+  const setup = () => page.setContent('<style>:focus-visible { outline: 2px solid black }</style><button id=a>A</button><button id=b>B</button><input id=t>');
+
+  test('a clicked button is focused but shows no ring', () => {
+    setup();
+    page.click('#a');
+    expect(foc('#a')).toBe(true);
+    expect(vis('#a')).toBe(false);
+  });
+
+  test('keyboard navigation shows the ring', () => {
+    setup();
+    page.click('#a');
+    page.press('Tab');
+    expect(foc('#b')).toBe(true);
+    expect(vis('#b')).toBe(true);
+  });
+
+  test('text fields always show it', () => {
+    setup();
+    page.click('#t');
+    expect(vis('#t')).toBe(true);
+  });
+
+  test('script focus follows the last interaction', () => {
+    setup();
+    page.click('#a');
+    page.evaluate("document.getElementById('b').focus()");
+    expect(vis('#b')).toBe(false);
+  });
+});

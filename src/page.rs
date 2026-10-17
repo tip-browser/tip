@@ -124,6 +124,10 @@ pub struct PageHost {
     pub elem_scroll: HashMap<NodeId, (f32, f32)>,
     pub hover: Option<NodeId>,
     pub focus: Option<NodeId>,
+    /// `:focus-visible` for the focused element (keyboard focus, or a text field).
+    pub focus_visible: bool,
+    /// The last interaction was the keyboard rather than a pointer (Chrome's heuristic).
+    pub keyboard_modality: bool,
     pub active: Option<NodeId>,
     pub highlight: Option<NodeId>,
     pub form: HashMap<NodeId, FormState>,
@@ -212,6 +216,8 @@ impl PageHost {
             elem_scroll: HashMap::new(),
             hover: None,
             focus: None,
+            focus_visible: false,
+            keyboard_modality: true,
             active: None,
             highlight: None,
             form: HashMap::new(),
@@ -428,7 +434,7 @@ impl PageHost {
 
     pub fn matched_rules(&mut self, n: NodeId) -> Vec<style::MatchedRule> {
         let rules = self.rules().1.clone();
-        let ctx = style::StyleContext { doc: &self.doc, rules: &rules, state: MatchState { hover: self.hover, focus: self.focus, active: self.active }, viewport: self.viewport };
+        let ctx = style::StyleContext { doc: &self.doc, rules: &rules, state: MatchState { hover: self.hover, focus: self.focus, active: self.active, focus_visible: self.focus_visible }, viewport: self.viewport };
         style::matched_rules(&ctx, n)
     }
 
@@ -440,7 +446,7 @@ impl PageHost {
             }
         }
         let rules = self.rules().1.clone();
-        let ctx = style::StyleContext { doc: &self.doc, rules: &rules, state: MatchState { hover: self.hover, focus: self.focus, active: self.active }, viewport: self.viewport };
+        let ctx = style::StyleContext { doc: &self.doc, rules: &rules, state: MatchState { hover: self.hover, focus: self.focus, active: self.active, focus_visible: self.focus_visible }, viewport: self.viewport };
         let s = Rc::new(style::compute_styles(&ctx));
         self.styles = Some((key, s.clone()));
         s

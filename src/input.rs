@@ -75,6 +75,9 @@ pub fn focus(it: &mut Interp, n: Option<NodeId>) {
     if let Some(n) = n {
         let h = ph(it);
         h.focus = Some(n);
+        // Like Chrome: a ring after keyboard navigation (or script focus that follows it), and
+        // always for text fields, but not for buttons and links focused by a click.
+        h.focus_visible = h.keyboard_modality || h.is_text_control(n) || h.doc.has_attr(n, "contenteditable");
         h.focus_value = Some(h.control_value(n));
         let len = h.control_value(n).chars().count();
         if h.is_text_control(n) {
@@ -462,6 +465,7 @@ impl Page {
 
     /// Mouse button pressed; `count` is the click count (2 = double click).
     pub fn mouse_down_n(&mut self, x: f32, y: f32, button: i32, mods: Mods, count: i32) {
+        self.host_mut().keyboard_modality = false;
         let sc = self.host().scroll;
         if let Some(row) = self.host_mut().popup_row_at(x + sc.0, y + sc.1) {
             if row.is_none() {
@@ -789,6 +793,15 @@ impl Page {
 
     /// Key pressed. `text` is the character(s) produced, if any.
     pub fn key_down(&mut self, key: &str, text: Option<&str>, mods: Mods) {
+        // a plain key press makes focus visible again (shortcuts with Cmd/Ctrl/Alt don't)
+        if !mods.meta && !mods.ctrl && !mods.alt && !matches!(key, "Shift" | "Control" | "Alt" | "Meta" | "CapsLock") {
+            let h = self.host_mut();
+            h.keyboard_modality = true;
+            if h.focus.is_some() && !h.focus_visible {
+                h.focus_visible = true;
+                h.invalidate();
+            }
+        }
         if let Some(p) = self.host().select_popup.clone() {
             let opts = self.host().select_options(p.node);
             let n = opts.len();

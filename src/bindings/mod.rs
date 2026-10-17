@@ -1009,7 +1009,7 @@ fn parse_sel(it: &mut Interp, v: &Value) -> R<Vec<css::Selector>> {
 fn query_all(it: &mut Interp, root: NodeId, sel: &Value) -> R<Vec<NodeId>> {
     let sels = parse_sel(it, sel)?;
     let h = ph(it);
-    let st = css::MatchState { hover: h.hover, focus: h.focus, active: h.active };
+    let st = css::MatchState { hover: h.hover, focus: h.focus, active: h.active, focus_visible: h.focus_visible };
     Ok(h.doc.element_descendants(root).into_iter().filter(|&e| css::matches_any(&h.doc, e, &sels, &st)).collect())
 }
 
@@ -1247,7 +1247,7 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
         let n = this_node(it, &this)?;
         let sels = parse_sel(it, &arg(args, 0))?;
         let h = ph(it);
-        let st = css::MatchState { hover: h.hover, focus: h.focus, active: h.active };
+        let st = css::MatchState { hover: h.hover, focus: h.focus, active: h.active, focus_visible: h.focus_visible };
         Ok(Value::Bool(css::matches_any(&h.doc, n, &sels, &st)))
     });
     let m = el.get_own("matches").unwrap();
