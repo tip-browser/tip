@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>New Tab</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Arial, sans-serif; color: #e5e7eb;
+         background: linear-gradient(160deg, #111827 0%, #1e1b4b 55%, #312e81 100%); min-height: 100vh; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 72px 24px 40px; }
+  .logo { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+  .mark { width: 54px; height: 54px; border-radius: 16px; background: linear-gradient(135deg, #818cf8, #ec4899);
+          display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: bold; color: white;
+          box-shadow: 0 10px 30px rgba(129, 140, 248, 0.35); }
+  h1 { font-size: 44px; margin: 0; letter-spacing: -1px; color: white; }
+  .tag { color: #a5b4fc; font-size: 17px; margin: 6px 0 34px; }
+  form { display: flex; gap: 10px; margin-bottom: 34px; }
+  #q { flex: 1; padding: 14px 18px; font-size: 16px; border-radius: 14px; border: 1px solid #4338ca;
+       background: rgba(255,255,255,0.06); color: white; }
+  #q:focus { outline: 2px solid #818cf8; }
+  button { padding: 14px 22px; border-radius: 14px; border: none; background: #6366f1; color: white; font-size: 16px; cursor: pointer; }
+  button:hover { background: #4f46e5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .card { display: block; padding: 18px; border-radius: 14px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+          color: #e5e7eb; text-decoration: none; }
+  .card:hover { background: rgba(255,255,255,0.12); }
+  .card b { display: block; color: white; margin-bottom: 4px; font-size: 16px; }
+  .card span { color: #9ca3af; font-size: 14px; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1.5px; color: #818cf8; margin: 30px 0 12px; }
+  .stats { display: flex; gap: 18px; flex-wrap: wrap; color: #9ca3af; font-size: 14px; }
+  .stats div { background: rgba(0,0,0,0.2); padding: 8px 12px; border-radius: 10px; }
+  #clock { font-variant-numeric: tabular-nums; }
+  kbd { background: rgba(255,255,255,0.12); border-radius: 5px; padding: 1px 6px; font-size: 12px; font-family: monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo"><div class="mark">T</div><h1>Tip</h1></div>
+  <p class="tag">A web browser written from scratch in Rust — HTML, CSS, layout, painting and JavaScript, all its own.</p>
+  <form id="go">
+    <input id="q" placeholder="Enter a URL (e.g. example.com) or a file path" autocomplete="off">
+    <button type="submit">Go</button>
+  </form>
+
+  <h2>Try it</h2>
+  <div class="grid">
+    <a class="card" href="tip://examples/todo.html"><b>Todo app</b><span>Classes, private fields, events, DOM</span></a>
+    <a class="card" href="tip://examples/layout.html"><b>Layout gallery</b><span>Flexbox, grid, tables, floats, positioning</span></a>
+    <a class="card" href="tip://examples/forms.html"><b>Forms</b><span>Inputs, checkboxes, selects, validation</span></a>
+    <a class="card" href="tip://examples/clock.html"><b>Live clock</b><span>Timers, async/await, CSS transforms</span></a>
+    <a class="card" href="tip://examples/basic.html"><b>Rendering basics</b><span>Text, shadows, gradients, borders</span></a>
+    <a class="card" href="https://example.com"><b>example.com</b><span>A real website over HTTPS</span></a>
+  </div>
+
+  <h2>Engine</h2>
+  <div class="stats">
+    <div>JS engine: <span id="js">…</span></div>
+    <div>Time: <span id="clock">--:--:--</span></div>
+    <div>Shortcuts: <kbd>F12</kbd> DevTools · <kbd>⌘L</kbd> address · <kbd>⌘T</kbd> new tab</div>
+  </div>
+</div>
+<script>
+  const pad = n => String(n).padStart(2, '0');
+  function tick() {
+    const d = new Date();
+    document.getElementById('clock').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+  tick();
+  setInterval(tick, 1000);
+  const features = [() => class { #x = 1 }, async () => { await 0 }, function* () { yield 1 }, () => 1n ** 2n, () => /(?<y>\d+)/u];
+  document.getElementById('js').textContent = `${features.length}/${features.length} modern features ✓`;
+  document.getElementById('go').addEventListener('submit', e => {
+    e.preventDefault();
+    let v = document.getElementById('q').value.trim();
+    if (!v) return;
+    if (!/^[a-z]+:/i.test(v) && !v.startsWith('/')) v = (v.includes('localhost') ? 'http://' : 'https://') + v;
+    if (v.startsWith('/')) v = 'file://' + v;
+    location.href = v;
+  });
+</script>
+</body>
+</html>

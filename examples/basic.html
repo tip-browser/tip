@@ -1,0 +1,31 @@
+<!doctype html>
+<html><head><title>Basic</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }
+  h1 { color: #4f46e5; margin-bottom: 4px }
+  .lead { color: #6b7280; font-size: 18px }
+  .row { display: flex; gap: 12px; margin: 16px 0; }
+  .card { flex: 1; padding: 14px; border-radius: 10px; background: #f3f4f6; border: 1px solid #e5e7eb; box-shadow: 0 4px 10px rgba(0,0,0,0.12) }
+  .card h3 { margin: 0 0 6px 0 }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #10b981; color: white; font-size: 12px; font-weight: bold }
+  .grad { height: 40px; border-radius: 8px; background: linear-gradient(90deg, #6366f1, #ec4899); }
+  table { border-collapse: collapse; margin-top: 12px }
+  td, th { border: 1px solid #ccc; padding: 4px 10px }
+  .float { float: right; width: 120px; height: 60px; background: #fde68a; margin: 0 0 8px 8px }
+</style></head>
+<body>
+<h1>Hello, Tip!</h1>
+<p class="lead">A browser engine written <em>from scratch</em> in <b>Rust</b>. <a href="#">This is a link</a> and <code>inline code</code>.</p>
+<div class="row">
+  <div class="card"><h3>Flexbox</h3>Cards laid out with <span class="badge">flex: 1</span> and a gap.</div>
+  <div class="card"><h3>Shadows</h3>Rounded corners, borders and blurred box shadows.</div>
+  <div class="card"><h3>Text</h3>Kerning, wrapping, bold and <i>italic</i> fonts.</div>
+</div>
+<div class="grad"></div>
+<div class="float">Floated</div>
+<p>This paragraph wraps around a floated box. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>
+<ul><li>First item</li><li>Second item with <b>bold</b></li></ul>
+<ol><li>One</li><li>Two</li></ol>
+<table><tr><th>Name</th><th>Value</th></tr><tr><td>Width</td><td>800px</td></tr></table>
+<p><input type="text"> <button>Click me</button> <input type="checkbox" checked> Check</p>
+</body></html>

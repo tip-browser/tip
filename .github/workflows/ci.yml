@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (headless tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fonts
+        run: sudo apt-get update && sudo apt-get install -y fonts-dejavu-core fonts-liberation
+      - name: Unit tests
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Automation tests
+        run: ./target/release/tip test tests --junit target/junit.xml
+      - name: Render smoke test
+        run: ./target/release/tip render examples/layout.html -o target/layout.png --full-page
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-results
+          path: |
+            target/junit.xml
+            target/*.png
+            target/screenshots
+
+  windows:
+    name: Windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: cargo test --release
+      - name: Build tip.exe
+        run: cargo build --release
+      - name: Automation tests
+        run: .\target\release\tip.exe test tests --junit target\junit.xml
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\tip | Out-Null
+          Copy-Item target\release\tip.exe dist\tip\
+          Copy-Item -Recurse examples dist\tip\examples
+          Copy-Item -Recurse tests dist\tip\tests
+          Copy-Item README.md dist\tip\
+          Compress-Archive -Path dist\tip\* -DestinationPath dist\tip-windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tip-windows-x64
+          path: |
+            dist/tip-windows-x64.zip
+            target/release/tip.exe
+
+  macos:
+    name: macOS (.app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: cargo test --release
+      - name: Automation tests
+        run: cargo build --release && ./target/release/tip test tests --junit target/junit.xml
+      - name: Bundle
+        run: ./scripts/bundle-macos.sh && cd dist && zip -qr tip-macos.zip Tip.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tip-macos
+          path: dist/tip-macos.zip

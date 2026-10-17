@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tip Todo</title>
+<style>
+  :root { --accent: #6366f1; --bg: #f8fafc; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; background: var(--bg); color: #0f172a; margin: 0; }
+  .app { max-width: 520px; margin: 48px auto; background: white; border-radius: 16px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); padding: 28px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { color: #64748b; margin: 0 0 20px; }
+  form { display: flex; gap: 8px; margin-bottom: 18px; }
+  input#new { flex: 1; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 15px; }
+  button { background: var(--accent); color: white; border: none; border-radius: 10px; padding: 10px 16px; font-size: 15px; cursor: pointer; }
+  button:hover { background: #4f46e5; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; align-items: center; gap: 10px; padding: 10px 6px; border-bottom: 1px solid #f1f5f9; }
+  li.done .label { text-decoration: line-through; color: #94a3b8; }
+  .label { flex: 1; }
+  .del { background: transparent; color: #ef4444; padding: 4px 8px; font-size: 18px; }
+  .del:hover { background: #fee2e2; }
+  .footer { display: flex; justify-content: space-between; margin-top: 14px; color: #64748b; font-size: 14px; }
+  .empty { color: #94a3b8; text-align: center; padding: 20px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Things to do</h1>
+  <p class="sub">A tiny app running on Tip's own JavaScript engine.</p>
+  <form id="add">
+    <input id="new" placeholder="What needs doing?" autocomplete="off">
+    <button type="submit" id="add-btn">Add</button>
+  </form>
+  <ul id="list"></ul>
+  <div class="footer"><span id="count">0 items left</span><a href="#" id="clear">Clear completed</a></div>
+</div>
+<script>
+  class TodoStore {
+    #items = [];
+    #listeners = new Set();
+    add(text) { this.#items.push({ id: crypto.randomUUID(), text, done: false }); this.#emit(); }
+    toggle(id) { const t = this.#items.find(t => t.id === id); if (t) { t.done = !t.done; this.#emit(); } }
+    remove(id) { this.#items = this.#items.filter(t => t.id !== id); this.#emit(); }
+    clearDone() { this.#items = this.#items.filter(t => !t.done); this.#emit(); }
+    get items() { return [...this.#items]; }
+    get remaining() { return this.#items.filter(t => !t.done).length; }
+    subscribe(fn) { this.#listeners.add(fn); }
+    #emit() { for (const fn of this.#listeners) fn(this); }
+  }
+
+  const store = new TodoStore();
+  const list = document.getElementById('list');
+  const count = document.querySelector('#count');
+
+  function render({ items, remaining }) {
+    list.innerHTML = '';
+    if (items.length === 0) {
+      list.innerHTML = '<li class="empty">Nothing yet — add something above.</li>';
+    }
+    for (const item of items) {
+      const li = document.createElement('li');
+      li.className = item.done ? 'done' : '';
+      li.dataset.id = item.id;
+      li.innerHTML = `<input type="checkbox" ${item.done ? 'checked' : ''}><span class="label"></span><button class="del" title="Delete">×</button>`;
+      li.querySelector('.label').textContent = item.text;
+      li.querySelector('input').addEventListener('change', () => store.toggle(item.id));
+      li.querySelector('.del').addEventListener('click', () => store.remove(item.id));
+      list.appendChild(li);
+    }
+    count.textContent = `${remaining} item${remaining === 1 ? '' : 's'} left`;
+    document.title = remaining ? `(${remaining}) Tip Todo` : 'Tip Todo';
+  }
+
+  store.subscribe(render);
+  document.getElementById('add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new');
+    const text = input.value.trim();
+    if (text) { store.add(text); input.value = ''; }
+  });
+  document.getElementById('clear').addEventListener('click', (e) => { e.preventDefault(); store.clearDone(); });
+
+  ['Write a browser engine', 'Teach it JavaScript', 'Ship it'].forEach(t => store.add(t));
+  store.toggle(store.items[0].id);
+  console.log('todo app ready with', store.items.length, 'items');
+</script>
+</body>
+</html>

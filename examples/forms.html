@@ -1,0 +1,57 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Forms</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f1f5f9; margin: 0; padding: 32px; color: #0f172a; }
+  .card { max-width: 520px; margin: 0 auto; background: white; border-radius: 14px; padding: 26px; box-shadow: 0 6px 20px rgba(0,0,0,0.06); }
+  label { display: block; font-weight: bold; margin: 14px 0 6px; font-size: 14px; }
+  input[type=text], input[type=email], input[type=password], select, textarea { width: 100%; padding: 9px 10px; font-size: 14px; border-radius: 8px; border: 1px solid #cbd5e1; box-sizing: border-box; }
+  textarea { height: 70px; font-family: Arial, sans-serif; }
+  .row { display: flex; gap: 18px; align-items: center; margin-top: 10px; }
+  .row label { display: inline; font-weight: normal; margin: 0; }
+  button { margin-top: 18px; padding: 10px 18px; border: none; border-radius: 8px; background: #0ea5e9; color: white; font-size: 15px; }
+  #out { margin-top: 18px; background: #0f172a; color: #a5f3fc; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 13px; white-space: pre-wrap; min-height: 40px; }
+  .err { color: #dc2626; font-size: 13px; }
+</style></head>
+<body>
+<div class="card">
+  <h2 style="margin-top:0">Sign up</h2>
+  <form id="f">
+    <label for="name">Name</label><input type="text" id="name" name="name" placeholder="Ada Lovelace" required>
+    <label for="email">Email</label><input type="email" id="email" name="email" placeholder="ada@example.com">
+    <label for="pw">Password</label><input type="password" id="pw" name="password">
+    <label for="plan">Plan</label>
+    <select id="plan" name="plan"><option value="free">Free</option><option value="pro" selected>Pro</option><option value="team">Team</option></select>
+    <label>Interests</label>
+    <div class="row">
+      <input type="checkbox" id="c1" name="topics" value="layout" checked><label for="c1">Layout</label>
+      <input type="checkbox" id="c2" name="topics" value="js"><label for="c2">JavaScript</label>
+    </div>
+    <div class="row">
+      <input type="radio" id="r1" name="freq" value="weekly" checked><label for="r1">Weekly</label>
+      <input type="radio" id="r2" name="freq" value="monthly"><label for="r2">Monthly</label>
+    </div>
+    <label for="vol">Team size: <span id="vol-out">50</span></label>
+    <input type="range" id="vol" name="size" min="0" max="100" step="5" value="50" style="width: 100%">
+    <label for="bio">Bio</label><textarea id="bio" name="bio"></textarea>
+    <span class="err" id="err"></span>
+    <button type="submit">Create account</button>
+  </form>
+  <div id="out">Fill the form and submit — the data is serialized with FormData.</div>
+</div>
+<script>
+  const form = document.getElementById('f');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const obj = {};
+    for (const [k, v] of data.entries()) obj[k] = k in obj ? [].concat(obj[k], v) : v;
+    if (!obj.name) { document.getElementById('err').textContent = 'Name is required'; return; }
+    document.getElementById('err').textContent = '';
+    document.getElementById('out').textContent = JSON.stringify(obj, null, 2);
+  });
+  document.getElementById('plan').addEventListener('change', e => console.log('plan changed to', e.target.value));
+  const vol = document.getElementById('vol');
+  vol.addEventListener('input', () => { document.getElementById('vol-out').textContent = vol.value; });
+  vol.addEventListener('change', () => console.log('size committed', vol.value));
+</script>
+</body></html>
