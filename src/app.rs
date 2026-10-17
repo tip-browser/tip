@@ -19,6 +19,37 @@ const SPLITTER: f32 = 5.0;
 /// Narrowest a tab gets before the strip starts scrolling.
 const MIN_TAB_W: f32 = 96.0;
 const MAX_TAB_W: f32 = 220.0;
+const TAB_GAP: f32 = 2.0;
+/// Width of the scroll button + hidden-tab counter on each side of an overflowing strip.
+const STRIP_CTRL_W: f32 = 44.0;
+
+/// Geometry of the tab strip for the current window width.
+#[derive(Debug, Clone, Copy)]
+struct TabStrip {
+    overflow: bool,
+    tab_w: f32,
+    /// Visible width of the tab track.
+    view: f32,
+    /// Horizontal scroll of the track (pixels).
+    scroll: f32,
+    max_scroll: f32,
+}
+
+impl TabStrip {
+    fn pitch(&self) -> f32 {
+        self.tab_w + TAB_GAP
+    }
+    /// Tabs (mostly) hidden to the left and right of the visible track.
+    fn hidden(&self, n: usize) -> (usize, usize) {
+        if !self.overflow {
+            return (0, 0);
+        }
+        let half = self.tab_w / 2.0;
+        let left = (0..n).filter(|&i| i as f32 * self.pitch() + half < self.scroll).count();
+        let right = (0..n).filter(|&i| i as f32 * self.pitch() + half > self.scroll + self.view).count();
+        (left, right)
+    }
+}
 const TABLIST_W: f32 = 380.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,8 +98,8 @@ pub struct App {
     chrome_key: String,
     status: Option<String>,
     caches: [RegionCache; 4],
-    /// First tab shown when the strip overflows.
-    tab_first: usize,
+    /// Horizontal scroll of the tab strip when it overflows (pixels).
+    tab_scroll: f32,
     /// Scroll the strip to the active tab on the next layout (set when it changes).
     follow_active: bool,
     tablist: Option<TabList>,
@@ -106,7 +137,7 @@ impl App {
             chrome_key: String::new(),
             status: None,
             caches: [RegionCache::new(), RegionCache::new(), RegionCache::new(), RegionCache::new()],
-            tab_first: 0,
+            tab_scroll: 0.0,
             follow_active: true,
             tablist: None,
             page_gen: vec![],
@@ -233,11 +264,11 @@ impl App {
     // ------------------------------------------------------------ chrome UI
 
     fn sync_chrome(&mut self) {
-        let _ = self.tab_window();
+        let strip = self.tab_strip();
         let t = &self.tabs[self.active];
         let url = t.pending.as_ref().map(|p| p.url.to_string()).unwrap_or_else(|| t.url().to_string());
         let shown_url = if url.starts_with("tip://home") { String::new() } else { url.clone() };
-        let mut key = format!("{}|{}|{}|{}|{}|{}|{}|{}|{}", self.active, shown_url, t.can_go_back(), t.can_go_forward(), t.is_loading(), self.devtools.is_some(), self.width, self.tab_first, self.tablist.is_some());
+        let mut key = format!("{}|{}|{}|{}|{}|{}|{}|{}|{}", self.active, shown_url, t.can_go_back(), t.can_go_forward(), t.is_loading(), self.devtools.is_some(), self.width, strip.scroll.round(), self.tablist.is_some());
         let titles: Vec<String> = self.tabs.iter().map(|t| if t.is_loading() && t.page.host().url.scheme == "about" { "Loading…".to_string() } else { t.page.title() }).collect();
         for tt in &titles {
             key.push('|');
@@ -247,34 +278,54 @@ impl App {
             return;
         }
         self.chrome_key = key;
-        let (first, count, tab_w) = self.tab_window();
         self.follow_active = false;
-        let overflow = count < self.tabs.len();
-        let mut tabs_html = String::new();
-        if overflow {
-            tabs_html.push_str(&format!("<div class=\"scroll{}\" data-action=tabscroll data-arg=-1 title=\"Scroll tabs left\">‹</div>", if first == 0 { " off" } else { "" }));
-            if first > 0 {
-                tabs_html.push_str(&format!("<span class=more title=\"{first} more tabs\">{first}</span>"));
-            }
-        }
-        for i in first..first + count {
+        let n = self.tabs.len();
+        let (hidden_l, hidden_r) = strip.hidden(n);
+        let tab_html = |i: usize, extra_style: &str| {
             let title = &titles[i];
-            let loading = self.tabs[i].is_loading();
-            tabs_html.push_str(&format!(
-                "<div class=\"tab{}\" style=\"width:{}px\" data-action=tab data-arg={i} title=\"{}\">{}<span class=title>{}</span><span class=x data-action=closetab data-arg={i}>×</span></div>",
+            format!(
+                "<div class=\"tab{}\" style=\"width:{}px{extra_style}\" data-action=tab data-arg={i} title=\"{}\">{}<span class=title>{}</span><span class=x data-action=closetab data-arg={i}>×</span></div>",
                 if i == self.active { " active" } else { "" },
-                tab_w.floor(),
+                strip.tab_w.floor(),
                 crate::dom::escape_attr(title),
-                if loading { "<span class=dot></span>" } else { "" },
+                if self.tabs[i].is_loading() { "<span class=dot></span>" } else { "" },
                 crate::dom::escape_text(title)
-            ));
-        }
-        if overflow {
-            let after = self.tabs.len() - first - count;
-            if after > 0 {
-                tabs_html.push_str(&format!("<span class=more title=\"{after} more tabs\">{after}</span>"));
+            )
+        };
+        let mut tabs_html = String::new();
+        if strip.overflow {
+            // ‹ N | clipped, scrolled track | N ›
+            let side = |dir: i32, count: usize| {
+                let label = if count > 0 { format!("<span class=more>{count}</span>") } else { String::new() };
+                let (arrow, word) = if dir < 0 { ("‹", "left") } else { ("›", "right") };
+                let inner = if dir < 0 { format!("{arrow}{label}") } else { format!("{label}{arrow}") };
+                format!(
+                    "<div class=\"scroll{}\" data-action=tabscroll data-arg={dir} title=\"{count} more tab{} to the {word}\">{inner}</div>",
+                    if count == 0 { " off" } else { "" },
+                    if count == 1 { "" } else { "s" }
+                )
+            };
+            tabs_html.push_str(&side(-1, hidden_l));
+            tabs_html.push_str(&format!("<div id=strip style=\"width:{}px\">", strip.view.floor()));
+            let pitch = strip.pitch();
+            let first = ((strip.scroll / pitch).floor() as usize).min(n - 1);
+            let last = (((strip.scroll + strip.view) / pitch).ceil() as usize).min(n);
+            for i in first..last {
+                let shift = if i == first { format!(";margin-left:{}px", (first as f32 * pitch - strip.scroll).round()) } else { String::new() };
+                tabs_html.push_str(&tab_html(i, &shift));
             }
-            tabs_html.push_str(&format!("<div class=\"scroll{}\" data-action=tabscroll data-arg=1 title=\"Scroll tabs right\">›</div>", if after == 0 { " off" } else { "" }));
+            if strip.scroll > 0.5 {
+                tabs_html.push_str("<div class=\"fade l\"></div>");
+            }
+            if strip.scroll < strip.max_scroll - 0.5 {
+                tabs_html.push_str("<div class=\"fade r\"></div>");
+            }
+            tabs_html.push_str("</div>");
+            tabs_html.push_str(&side(1, hidden_r));
+        } else {
+            for i in 0..n {
+                tabs_html.push_str(&tab_html(i, ""));
+            }
         }
         tabs_html.push_str("<div id=newtab data-action=newtab title=\"New tab\">+</div>");
         tabs_html.push_str("<div id=spacer></div>");
@@ -311,41 +362,48 @@ impl App {
         }
     }
 
-    /// Which tabs fit in the strip: (first index, count, tab width). Keeps the active tab visible.
-    fn tab_window(&mut self) -> (usize, usize, f32) {
-        let n = self.tabs.len();
+    /// Lay out the tab strip: tab width, and when the tabs don't fit, the scroll position
+    /// (kept in range, and following the active tab after it changes).
+    fn tab_strip(&mut self) -> TabStrip {
+        let n = self.tabs.len().max(1);
         // left inset (window buttons) + new tab + all-tabs buttons + padding
         let avail = (self.width - 78.0 - 8.0 - 30.0 - 36.0).max(MIN_TAB_W);
-        let gap = 2.0;
-        let fits = |k: usize, w: f32| k as f32 * (w + gap) <= avail;
-        if fits(n, MIN_TAB_W) {
-            self.tab_first = 0;
-            let w = ((avail / n.max(1) as f32) - gap).clamp(MIN_TAB_W, MAX_TAB_W);
-            return (0, n, w);
+        if n as f32 * (MIN_TAB_W + TAB_GAP) <= avail {
+            self.tab_scroll = 0.0;
+            let w = ((avail / n as f32) - TAB_GAP).clamp(MIN_TAB_W, MAX_TAB_W);
+            return TabStrip { overflow: false, tab_w: w, view: avail, scroll: 0.0, max_scroll: 0.0 };
         }
-        // overflow: room for the scroll buttons and the hidden-tab counters
-        let room = avail - 2.0 * 24.0 - 2.0 * 26.0;
-        let count = ((room / (MIN_TAB_W + gap)).floor() as usize).clamp(1, n);
-        let mut first = self.tab_first.min(n - count);
+        let view = (avail - 2.0 * STRIP_CTRL_W).max(MIN_TAB_W);
+        let tab_w = MIN_TAB_W;
+        let pitch = tab_w + TAB_GAP;
+        let max_scroll = (n as f32 * pitch - TAB_GAP - view).max(0.0);
+        let mut scroll = self.tab_scroll;
         if self.follow_active {
-            if self.active < first {
-                first = self.active;
-            } else if self.active >= first + count {
-                first = self.active + 1 - count;
+            let start = self.active as f32 * pitch;
+            if start < scroll {
+                scroll = start;
+            } else if start + tab_w > scroll + view {
+                scroll = start + tab_w - view;
             }
         }
-        self.tab_first = first;
-        let w = ((room / count as f32) - gap).clamp(MIN_TAB_W, MAX_TAB_W);
-        (first, count, w)
+        scroll = scroll.clamp(0.0, max_scroll);
+        self.tab_scroll = scroll;
+        TabStrip { overflow: true, tab_w, view, scroll, max_scroll }
     }
 
-    /// Scroll the tab strip by `delta` tabs (without changing the active tab).
-    fn scroll_tabs(&mut self, delta: i64) {
-        let (_, count, _) = self.tab_window();
-        let max_first = self.tabs.len().saturating_sub(count);
-        let first = (self.tab_first as i64 + delta).clamp(0, max_first as i64) as usize;
+    /// Scroll the tab strip by `dx` pixels (without changing the active tab).
+    fn scroll_tabs_by(&mut self, dx: f32) {
         self.follow_active = false;
-        self.tab_first = first;
+        self.tab_scroll += dx;
+        self.tab_strip();
+    }
+
+    /// The ‹ › buttons: move about a strip's width, landing on a tab boundary.
+    fn page_tabs(&mut self, dir: i64) {
+        let strip = self.tab_strip();
+        let pitch = strip.pitch();
+        let target = if dir < 0 { ((strip.scroll - strip.view * 0.8) / pitch).floor() * pitch } else { ((strip.scroll + strip.view * 0.8) / pitch).ceil() * pitch };
+        self.scroll_tabs_by(target - strip.scroll);
     }
 
     fn tablist_rect(&self) -> Rect {
@@ -450,7 +508,7 @@ impl App {
                 "alltabs" => self.toggle_tablist(),
                 "tabscroll" => {
                     if let Ok(d) = arg.parse::<i64>() {
-                        self.scroll_tabs(d)
+                        self.page_tabs(d)
                     }
                 }
                 "newtab" => {
@@ -798,10 +856,10 @@ impl App {
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
         let r = self.region_at(x, y);
         if r == Region::Chrome && y < 36.0 {
-            // wheel over the tab strip scrolls through tabs
+            // wheel or trackpad over the tab strip scrolls it sideways
             let d = if dx.abs() > dy.abs() { dx } else { dy };
-            if d.abs() >= 1.0 {
-                self.scroll_tabs(if d > 0.0 { 1 } else { -1 });
+            if d != 0.0 {
+                self.scroll_tabs_by(d);
             }
             return;
         }
@@ -1066,18 +1124,40 @@ mod tests {
         app
     }
 
+    fn visible(app: &mut App, i: usize) -> bool {
+        let s = app.tab_strip();
+        let start = i as f32 * s.pitch() - s.scroll;
+        start >= -0.5 && start + s.tab_w <= s.view + 0.5
+    }
+
     #[test]
     fn tab_strip_scrolls_and_lists_all_tabs() {
         let mut app = app_with_tabs(30);
-        let (first, count, w) = app.tab_window();
-        assert!(count < 30 && count >= 5, "visible {count}");
-        assert!(first + count == 30, "the new active tab is in view");
-        assert!(w >= MIN_TAB_W);
-        // scrolling moves the window without changing the active tab
-        app.scroll_tabs(-100);
+        let s = app.tab_strip();
+        assert!(s.overflow && s.tab_w >= MIN_TAB_W);
+        assert!(visible(&mut app, 29), "the new active tab is in view");
+        let (left, right) = s.hidden(30);
+        assert!(left > 0 && right == 0, "hidden {left} / {right}");
+        // pixel scrolling moves the strip without changing the active tab
+        app.scroll_tabs_by(-37.0);
+        assert!((app.tab_strip().scroll - (s.scroll - 37.0)).abs() < 0.01);
+        app.scroll_tabs_by(-100_000.0);
         app.tick();
-        assert_eq!(app.tab_window().0, 0);
+        assert_eq!(app.tab_strip().scroll, 0.0);
+        assert_eq!(app.tab_strip().hidden(30).0, 0);
+        assert!(app.tab_strip().hidden(30).1 > 0);
         assert_eq!(app.active, 29);
+        // the arrow buttons page by about a strip's width, on a tab boundary
+        app.page_tabs(1);
+        let s2 = app.tab_strip();
+        assert!(s2.scroll > s2.view * 0.5 && (s2.scroll / s2.pitch()).fract().abs() < 0.01);
+        // the counters are in the chrome
+        app.tick();
+        let h = app.chrome.host();
+        let tabs = h.doc.get_element_by_id("tabs").unwrap();
+        let counters: Vec<String> = h.doc.element_descendants(tabs).into_iter().filter(|&e| h.doc.attr(e, "class") == Some("more")).map(|e| h.doc.text_content(e)).collect();
+        let (l, r) = app.tab_strip().hidden(30);
+        assert_eq!(counters, vec![l.to_string(), r.to_string()]);
         // the list panel shows every tab and switches on click
         app.toggle_tablist();
         app.tick();
@@ -1090,14 +1170,14 @@ mod tests {
         app.handle_tablist_pick(3);
         assert_eq!(app.active, 3);
         assert!(app.tablist.is_none());
-        let (first, count, _) = app.tab_window();
-        assert!(first <= 3 && 3 < first + count);
+        assert!(visible(&mut app, 3));
     }
 
     #[test]
     fn few_tabs_do_not_scroll() {
         let mut app = app_with_tabs(4);
-        assert_eq!(app.tab_window().0, 0);
-        assert_eq!(app.tab_window().1, 4);
+        let s = app.tab_strip();
+        assert!(!s.overflow);
+        assert_eq!(s.hidden(4), (0, 0));
     }
 }

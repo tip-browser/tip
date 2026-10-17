@@ -10,18 +10,23 @@
          border-radius: 9px 9px 0 0; color: #4b5563; cursor: default; overflow: hidden; }
   .tab:hover { background: #eceff4; }
   .tab.active { background: #f7f8fa; color: #111827; box-shadow: 0 -1px 2px rgba(0,0,0,0.05); }
-  .tab .title { flex: 1; white-space: nowrap; overflow: hidden; }
+  .tab .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tab .x { width: 18px; height: 18px; border-radius: 9px; text-align: center; line-height: 18px; color: #6b7280; font-size: 14px; }
   .tab .x:hover { background: #d1d5db; color: #111827; }
   .tab .dot { width: 8px; height: 8px; border-radius: 4px; background: #6366f1; }
   #newtab { width: 28px; height: 28px; margin-bottom: 1px; border-radius: 8px; text-align: center; line-height: 28px; font-size: 18px; color: #4b5563; flex: none; }
   #newtab:hover { background: #cfd5df; }
   .tab { flex: none; }
-  .scroll { width: 22px; height: 28px; margin-bottom: 1px; border-radius: 6px; text-align: center; line-height: 28px; font-size: 16px; color: #4b5563; flex: none; }
+  .scroll { display: flex; align-items: center; justify-content: center; gap: 3px; width: 42px; height: 28px; margin-bottom: 1px; border-radius: 6px; font-size: 16px; color: #4b5563; flex: none; }
   .scroll:hover { background: #cfd5df; }
   .scroll.off { color: #b8bec8; }
   .scroll.off:hover { background: transparent; }
-  .more { margin-left: 2px; padding: 0 5px; border-radius: 8px; background: #cfd5df; font-size: 11px; color: #374151; height: 18px; line-height: 18px; margin-bottom: 6px; flex: none; }
+  .more { padding: 0 5px; min-width: 18px; border-radius: 8px; background: #cfd5df; font-size: 11px; font-weight: 600; color: #374151; height: 17px; line-height: 17px; text-align: center; }
+  .scroll:hover .more { background: #b9c1ce; }
+  #strip { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 30px; flex: none; overflow: hidden; }
+  .fade { position: absolute; top: 0; bottom: 0; width: 18px; pointer-events: none; }
+  .fade.l { left: 0; background: linear-gradient(to right, #dfe3ea, rgba(223, 227, 234, 0)); }
+  .fade.r { right: 0; background: linear-gradient(to left, #dfe3ea, rgba(223, 227, 234, 0)); }
   #spacer { flex: 1; align-self: stretch; }
   #alltabs { width: 28px; height: 28px; margin-bottom: 1px; border-radius: 8px; text-align: center; line-height: 26px; font-size: 15px; color: #4b5563; flex: none; }
   #alltabs:hover, #alltabs.on { background: #cfd5df; }
