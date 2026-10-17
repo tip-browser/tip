@@ -134,3 +134,29 @@ describe('intrinsic sizing', () => {
     expect(page.box('#f').width).toBeLessThan(80);
   });
 });
+
+describe('line breaking', () => {
+  const long = 'https://www.example.com/search?q=' + 'abcdefghij'.repeat(12);
+  test('line-break: anywhere and word-break: break-all wrap long words', () => {
+    page.setContent(`<style>body{margin:0} div{width:200px;font-size:13px}</style>
+      <div id=a style="line-break:anywhere">${long}</div>
+      <div id=b style="word-break:break-all">${long}</div>
+      <div id=c>${long}</div>`);
+    for (const id of ['a', 'b']) {
+      expect(page.evaluate(`document.getElementById('${id}').scrollWidth`)).toBeLessThan(201);
+      expect(page.box('#' + id).height).toBeGreaterThan(40);
+    }
+    // without them the word stays on one (overflowing) line
+    expect(page.box('#c').height).toBeLessThan(20);
+  });
+
+  test('overflow-wrap: break-word only breaks words that do not fit', () => {
+    page.setContent(`<style>body{margin:0} div{width:200px;font-size:13px;overflow-wrap:break-word}</style>
+      <div id=a>short words wrap normally</div><div id=b>${long}</div>
+      <span id=s style="display:inline-block;overflow-wrap:break-word">${long}</span><span id=t style="display:inline-block;width:min-content;overflow-wrap:anywhere">${long}</span>`);
+    expect(page.evaluate(`document.getElementById('b').scrollWidth`)).toBeLessThan(201);
+    expect(page.box('#a').height).toBeLessThan(20);
+    // break-word does not lower the min-content width; anywhere does
+    expect(page.box('#t').width).toBeLessThan(20);
+  });
+});

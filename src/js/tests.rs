@@ -223,3 +223,13 @@ fn assignment_target_evaluates_before_value() {
     check!("var log = []; function f(t, v) { log.push(t); return v } f('obj', {})[f('key', 'k')] = f('rhs', 1); log.join()", "obj,key,rhs");
     check!("var o = { a: 1 }; o.a += (o.a = 10); o.a", "11");
 }
+
+#[test]
+fn bigint_wrapping() {
+    check!("BigInt.asUintN(8, 257n)", "1n");
+    check!("BigInt.asUintN(64, -1n)", "18446744073709551615n");
+    check!("BigInt.asIntN(8, 255n)", "-1n");
+    check!("BigInt.asIntN(64, 9223372036854775808n)", "-9223372036854775808n");
+    check!("BigInt.asIntN(32, 5n)", "5n");
+    check!("BigInt('0xff') + BigInt('0b11')", "258n");
+}

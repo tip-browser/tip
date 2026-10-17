@@ -23,3 +23,4 @@ pub mod app;
 pub mod devtools;
 pub mod rust;
 pub mod frames;
+pub mod workers;

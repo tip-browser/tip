@@ -189,6 +189,12 @@ pub struct PageHost {
     pub inbox: Vec<crate::frames::Message>,
     /// WindowProxy objects for other windows, by id (frame node, or parent/top).
     pub frame_proxies: crate::frames::FrameProxies,
+    /// Dedicated workers started by this page.
+    pub workers: Vec<crate::workers::WorkerCtx>,
+    /// Set when this page is a worker's global scope.
+    pub worker_link: Option<crate::workers::WorkerLink>,
+    /// Messages from the owner waiting to be delivered (in a worker).
+    pub worker_inbox: Vec<crate::workers::WorkerMsg>,
     /// Rules of sheets edited through the CSSOM (`insertRule`, ...), by owner element.
     pub cssom: HashMap<NodeId, Vec<String>>,
     /// Constructed stylesheets (`new CSSStyleSheet()`) and the ones adopted by the document.
@@ -198,6 +204,10 @@ pub struct PageHost {
     pub sheet_texts: HashMap<String, String>,
     /// MessagePort ends in this window whose peer is in another window, by mailbox id.
     pub ports: HashMap<u64, Value>,
+    /// Names of this page's frames, shared with them for `parent.frames[...]`.
+    pub frame_names: Rc<std::cell::RefCell<Vec<String>>>,
+    /// Keys of the parent's frames this (framed) page has proxies for.
+    pub sibling_keys: Vec<String>,
     /// Frame navigations requested through `frame.location`.
     pub frame_navs: Vec<(NodeId, Url)>,
     /// Scripts that have run (or been fetched to run), so each runs once.
@@ -300,8 +310,13 @@ impl PageHost {
             inbox: Vec::new(),
             frame_proxies: Default::default(),
             frame_navs: Vec::new(),
+            frame_names: Default::default(),
+            sibling_keys: Vec::new(),
             ports: HashMap::new(),
             cssom: HashMap::new(),
+            workers: Vec::new(),
+            worker_link: None,
+            worker_inbox: Vec::new(),
             constructed_sheets: HashMap::new(),
             adopted_sheets: Vec::new(),
             sheet_texts: HashMap::new(),
@@ -1362,11 +1377,7 @@ impl Page {
     // ------------------------------------------------------------ timers
 
     pub fn next_timer_due(&self) -> Option<Instant> {
-        let own = self.host().timers.iter().map(|t| t.due).min();
-        match (own, self.frames_next_timer_due()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        [self.host().timers.iter().map(|t| t.due).min(), self.frames_next_timer_due(), self.workers_next_timer_due()].into_iter().flatten().min()
     }
 
     pub fn has_animation_frames(&self) -> bool {
@@ -1440,12 +1451,13 @@ impl Page {
         let b = self.run_timers();
         let c = crate::frames::take_frame_navs(self) | self.poll_frames();
         let d = self.poll_scripts();
-        a || b || f || c || d
+        let e = self.poll_workers();
+        a || b || f || c || d || e
     }
 
     pub fn has_pending_work(&self) -> bool {
         let h = self.host();
-        h.images_pending() || !h.pending_fetches.is_empty() || !h.img_watch.is_empty() || !h.inbox.is_empty() || !h.pending_scripts.is_empty() || self.frames_have_pending_work() || self.has_port_messages()
+        h.images_pending() || !h.pending_fetches.is_empty() || !h.img_watch.is_empty() || !h.inbox.is_empty() || !h.pending_scripts.is_empty() || self.frames_have_pending_work() || self.has_port_messages() || self.workers_pending()
     }
 
     fn notify_mutation_observers(&mut self) {

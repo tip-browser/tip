@@ -98,6 +98,7 @@ See [examples/rust.html](examples/rust.html).
   - Windows talk through `postMessage`. Messages are structured-cloned, and `MessagePort`s can be transferred between windows.
   - Scripts reach other windows through `contentWindow`, `parent`, `top` and `frames[i]`. Tip treats every frame as cross-origin, so `contentDocument` is `null`.
   - Pages that refuse framing (`X-Frame-Options`, CSP `frame-ancestors`) are blocked.
+- Dedicated workers (`new Worker`, including `blob:` and module workers): each runs in its own global scope with timers, `fetch` and `importScripts`, and can exchange MessagePorts with the page. Workers currently share the page's thread.
 - Scripts inserted at run time run like the page's own: inline scripts run on insertion, and external scripts load asynchronously and then fire `load` / `error`.
 - CSSOM: `document.styleSheets`, `element.sheet`, `cssRules`, `insertRule` / `deleteRule` (the CSS-in-JS fast path), constructed sheets and `adoptedStyleSheets`.
 - `DOMParser`, `TextEncoder`, `crypto.randomUUID`, `AbortSignal`, and more.
@@ -176,7 +177,7 @@ These are areas the engine doesn't cover yet:
 - WebP (shown as alt text), animated GIFs (first frame only)
 - `<canvas>`, video, SVG filters and text
 - CSS transforms other than translate, animations and transitions
-- Shadow DOM, Web Workers
+- Shadow DOM, shared and service workers
 - same-origin script access into frames (`contentDocument`): every frame is treated as cross-origin
 - IME input
 - Windows: the release `tip.exe` is a GUI-subsystem binary, so console output from CLI commands attaches to the parent console.

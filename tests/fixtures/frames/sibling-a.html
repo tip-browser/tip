@@ -1,0 +1,5 @@
+<!doctype html><script>
+  window.addEventListener('message', (e) => {
+    if (e.data === 'hi from b') e.source.postMessage('hi back from a', '*');
+  });
+</script>

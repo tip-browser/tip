@@ -677,3 +677,56 @@
   Element.prototype.setAttributeNode = function (attr) { const old = this.getAttributeNode(attr.name); this.setAttribute(attr.name, attr.value); return old; };
   Element.prototype.removeAttributeNode = function (attr) { this.removeAttribute(attr.name); return attr; };
 })();
+
+// Dedicated workers (the natives run them in their own global scope)
+(() => {
+  const g = globalThis;
+  const workers = new Map();
+  class Worker extends EventTarget {
+    constructor(url, options) {
+      super();
+      this.onmessage = null;
+      this.onmessageerror = null;
+      this.onerror = null;
+      const opts = options || {};
+      const id = __tip_worker_start(String(url), opts.type === 'module' ? 'module' : 'classic', opts.name ? String(opts.name) : '');
+      Object.defineProperty(this, '_id', { value: id });
+      workers.set(id, this);
+    }
+    postMessage(data, transfer) { __tip_worker_post(this._id, data, transfer); }
+    terminate() { __tip_worker_terminate(this._id); workers.delete(this._id); }
+    get [Symbol.toStringTag]() { return 'Worker'; }
+  }
+  Object.defineProperty(g, '__tip_worker_deliver', { value: (id, data, ports) => { const w = workers.get(id); if (w) w.dispatchEvent(new MessageEvent('message', { data, ports: ports || [] })); }, configurable: true });
+  Object.defineProperty(g, '__tip_worker_error', {
+    value: (id, message) => {
+      const w = workers.get(id);
+      if (!w) return;
+      const ev = typeof ErrorEvent === 'function' ? new ErrorEvent('error', { message }) : new Event('error');
+      w.dispatchEvent(ev);
+    },
+    configurable: true,
+  });
+  Object.defineProperty(g, 'Worker', { value: Worker, writable: true, configurable: true });
+})();
+
+// WindowProxy for the parent / top window: frames by index or name (`parent.frames[n]`)
+Object.defineProperty(globalThis, '__tip_wrap_window', {
+  value: (w) => {
+    const id = w.__tipWindowId;
+    const p = new Proxy(w, {
+      get(t, k) {
+        if (k === 'frames' || k === 'self' || k === 'window') return p;
+        if (k === 'length') return __tip_frame_lookup(id, 'length');
+        if (typeof k === 'string' && !(k in t)) {
+          const f = __tip_frame_lookup(id, k);
+          return f === null ? undefined : f;
+        }
+        return t[k];
+      },
+      has(t, k) { return k in t || (typeof k === 'string' && __tip_frame_lookup(id, k) !== null); },
+    });
+    return p;
+  },
+  configurable: true,
+});

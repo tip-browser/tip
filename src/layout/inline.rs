@@ -172,10 +172,20 @@ impl Collector<'_, '_> {
             WhiteSpace::Normal | WhiteSpace::NoWrap | WhiteSpace::PreLine => {
                 let mut word = String::new();
                 let mut soft_next = false;
+                let key = crate::text::FontKey::new(style.font_family, style.font_weight, style.italic);
                 let flush = |this: &mut Self, word: &mut String, soft: bool| {
-                    if !word.is_empty() {
-                        this.push_word(std::mem::take(word), style, node, soft);
+                    if word.is_empty() {
+                        return;
                     }
+                    let w = std::mem::take(word);
+                    // overflow-wrap: a word wider than the line may break anywhere
+                    if style.overflow_wrap > 0 && w.chars().nth(1).is_some() && crate::text::measure(key, style.font_size, &w, style.letter_spacing) > this.avail_w {
+                        for (i, ch) in w.chars().enumerate() {
+                            this.push_word(ch.to_string(), style, node, i > 0 || soft);
+                        }
+                        return;
+                    }
+                    this.push_word(w, style, node, soft);
                 };
                 for c in raw.chars() {
                     if c == '\n' && ws == WhiteSpace::PreLine {
@@ -206,6 +216,12 @@ impl Collector<'_, '_> {
                         continue;
                     }
                     word.push(c);
+                    if style.break_anywhere {
+                        // word-break: break-all / line-break: anywhere
+                        flush(self, &mut word, soft_next);
+                        soft_next = true;
+                        continue;
+                    }
                     if c == '-' && word.chars().count() > 2 {
                         flush(self, &mut word, soft_next);
                         soft_next = true;

@@ -481,7 +481,22 @@ fn install_page_api(it: &mut Interp) {
     });
     it.define_method(&page, "requests", 0, |it, _, _| {
         // the page's network log: [{ url, method, kind, status, error }]
-        let entries: Vec<(String, String, &'static str, u16, Option<String>)> = th(it).tab.page.host().net_log.iter().map(|e| (e.url.clone(), e.method.clone(), e.kind, e.status, e.error.clone())).collect();
+        // this page's requests, then each frame's (recursively), like the Network panel
+        fn collect(h: &crate::page::PageHost, out: &mut Vec<(String, String, &'static str, u16, Option<String>)>) {
+            out.extend(h.net_log.iter().map(|e| (e.url.clone(), e.method.clone(), e.kind, e.status, e.error.clone())));
+            for f in &h.frames {
+                if let Some(p) = &f.page {
+                    collect(p.host(), out);
+                }
+            }
+            for w in &h.workers {
+                if let Some(p) = &w.page {
+                    collect(p.host(), out);
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        collect(th(it).tab.page.host(), &mut entries);
         let items: Vec<Value> = entries
             .into_iter()
             .map(|(url, method, kind, status, error)| {

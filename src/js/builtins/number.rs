@@ -261,14 +261,51 @@ pub fn setup(it: &mut Interp) {
             Value::Num(_) => throw!(it, "RangeError", "The number cannot be converted to a BigInt because it is not an integer"),
             Value::BigInt(b) => Value::BigInt(b),
             Value::Bool(b) => Value::BigInt(b as i128),
-            Value::Str(s) => match s.trim().parse::<i128>() {
-                Ok(v) => Value::BigInt(v),
-                Err(_) => throw!(it, "SyntaxError", "Cannot convert {s} to a BigInt"),
-            },
+            Value::Str(s) => {
+                let t = s.trim();
+                let parsed = match t.get(..2).map(|p| p.to_ascii_lowercase()) {
+                    Some(p) if p == "0x" => i128::from_str_radix(&t[2..], 16),
+                    Some(p) if p == "0o" => i128::from_str_radix(&t[2..], 8),
+                    Some(p) if p == "0b" => i128::from_str_radix(&t[2..], 2),
+                    _ if t.is_empty() => Ok(0),
+                    _ => t.parse::<i128>(),
+                };
+                match parsed {
+                    Ok(v) => Value::BigInt(v),
+                    Err(_) => throw!(it, "SyntaxError", "Cannot convert {s} to a BigInt"),
+                }
+            }
             _ => throw!(it, "TypeError", "Cannot convert value to a BigInt"),
         })
     });
-    let _ = bctor;
+    // BigInt.asUintN / asIntN: wrap to `bits` bits (exact up to 127 bits; values are i128)
+    let wrap_args = |it: &mut Interp, args: &[Value]| -> R<(u32, i128)> {
+        let bits = it.to_integer(&arg(args, 0))?;
+        if !(0.0..=9007199254740991.0).contains(&bits) {
+            throw!(it, "RangeError", "Invalid value: not (convertible to) a safe integer");
+        }
+        let Value::BigInt(x) = arg(args, 1) else { throw!(it, "TypeError", "Cannot convert value to a BigInt") };
+        Ok((bits.min(128.0) as u32, x))
+    };
+    it.define_method(&bctor, "asUintN", 2, move |it, _, args| {
+        let (bits, x) = wrap_args(it, args)?;
+        Ok(Value::BigInt(match bits {
+            0 => 0,
+            b if b >= 128 => x,
+            b => x & ((1i128 << b) - 1),
+        }))
+    });
+    it.define_method(&bctor, "asIntN", 2, move |it, _, args| {
+        let (bits, x) = wrap_args(it, args)?;
+        Ok(Value::BigInt(match bits {
+            0 => 0,
+            b if b >= 128 => x,
+            b => {
+                let m = x & ((1i128 << b) - 1);
+                if m >> (b - 1) & 1 == 1 { m - (1i128 << b) } else { m }
+            }
+        }))
+    });
     it.define_method(&bip, "toString", 0, |it, this, args| {
         let Value::BigInt(b) = this else { throw!(it, "TypeError", "not a BigInt") };
         let r = arg(args, 0);

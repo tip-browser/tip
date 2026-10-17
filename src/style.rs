@@ -461,6 +461,13 @@ pub struct ComputedStyle {
     pub overline: bool,
     pub decoration_color: Option<Color>,
     pub text_transform: TextTransform,
+    /// `word-break: break-all` or `line-break: anywhere`: a line may break between any characters.
+    pub break_anywhere: bool,
+    /// `overflow-wrap` / `word-wrap`: break words that don't fit (2 = `anywhere`, which also
+    /// lowers the min-content width; 1 = `break-word`, which doesn't).
+    pub overflow_wrap: u8,
+    /// Which of `word-break` / `line-break` set `break_anywhere` (so either can unset it).
+    pub break_sources: u8,
     pub white_space: WhiteSpace,
     pub letter_spacing: f32,
     pub word_spacing: f32,
@@ -552,6 +559,9 @@ impl Default for ComputedStyle {
             overline: false,
             decoration_color: None,
             text_transform: TextTransform::None,
+            break_anywhere: false,
+            overflow_wrap: 0,
+            break_sources: 0,
             white_space: WhiteSpace::Normal,
             letter_spacing: 0.0,
             word_spacing: 0.0,
@@ -620,6 +630,9 @@ impl ComputedStyle {
             overline: parent.overline,
             decoration_color: parent.decoration_color,
             text_transform: parent.text_transform,
+            break_anywhere: parent.break_anywhere,
+            overflow_wrap: parent.overflow_wrap,
+            break_sources: parent.break_sources,
             white_space: parent.white_space,
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,
@@ -2006,6 +2019,8 @@ fn copy_prop(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
         "pointer-events" => cp!(pointer_events),
         "letter-spacing" => cp!(letter_spacing),
         "text-transform" => cp!(text_transform),
+        "word-break" | "line-break" => cp!(break_anywhere, break_sources, overflow_wrap),
+        "overflow-wrap" | "word-wrap" => cp!(overflow_wrap),
         "box-shadow" => cp!(box_shadow),
         "z-index" => cp!(z_index),
         "vertical-align" => cp!(vertical_align),
@@ -2075,7 +2090,7 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
             Some("inherit") => return copy_prop(s, parent, name),
             Some("initial") => return copy_prop(s, &ComputedStyle::default(), name),
             Some("unset") | Some("revert") | Some("revert-layer") => {
-                let inherited = matches!(name, "color" | "font" | "font-size" | "font-weight" | "font-style" | "font-family" | "line-height" | "text-align" | "white-space" | "cursor" | "visibility" | "list-style" | "list-style-type" | "letter-spacing" | "text-transform" | "pointer-events");
+                let inherited = matches!(name, "color" | "font" | "font-size" | "font-weight" | "font-style" | "font-family" | "line-height" | "text-align" | "white-space" | "cursor" | "visibility" | "list-style" | "list-style-type" | "letter-spacing" | "text-transform" | "pointer-events" | "word-break" | "line-break" | "overflow-wrap" | "word-wrap");
                 let initial = ComputedStyle::default();
                 return copy_prop(s, if inherited { parent } else { &initial }, name);
             }
@@ -2553,6 +2568,24 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
             }
         }
         "text-overflow" => s.ellipsis = kw == "ellipsis",
+        "word-break" | "line-break" => {
+            // bit 1: word-break: break-all; bit 2: line-break: anywhere
+            let bit = if name == "word-break" { 1 } else { 2 };
+            let on = matches!((name, kw.as_str()), ("word-break", "break-all") | ("line-break", "anywhere"));
+            s.break_sources = if on { s.break_sources | bit } else { s.break_sources & !bit };
+            s.break_anywhere = s.break_sources != 0;
+            // legacy `word-break: break-word` behaves like `overflow-wrap: anywhere`
+            if name == "word-break" && kw == "break-word" {
+                s.overflow_wrap = 2;
+            }
+        }
+        "overflow-wrap" | "word-wrap" => {
+            s.overflow_wrap = match kw.as_str() {
+                "anywhere" => 2,
+                "break-word" => 1,
+                _ => 0,
+            }
+        }
         "vertical-align" => {
             s.vertical_align = match kw.as_str() {
                 "middle" => VAlign::Middle,

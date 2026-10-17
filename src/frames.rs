@@ -47,11 +47,13 @@ pub enum Cloned {
 }
 
 /// Which window sent a message, from the receiver's point of view.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     Parent,
     Top,
     Frame(NodeId),
+    /// Another frame of the same parent, by its key (iframe name, or "#index").
+    Sibling(String),
 }
 
 /// A message on its way to a window.
@@ -73,6 +75,8 @@ pub struct UpMessage {
     pub target_origin: String,
     pub to_top: bool,
     pub ports: Vec<(u64, u64)>,
+    /// For a sibling frame (`parent.frames[name]`): its key; the parent routes it.
+    pub sibling: Option<String>,
 }
 
 /// What a child page knows about the frame it lives in.
@@ -80,6 +84,8 @@ pub struct ParentLink {
     pub outbox: Rc<RefCell<Vec<UpMessage>>>,
     pub parent_origin: String,
     pub depth: usize,
+    /// Names of the parent's frames in order ("" when unnamed), for `parent.frames[...]`.
+    pub siblings: Rc<RefCell<Vec<String>>>,
 }
 
 /// One `<iframe>` element's browsing context.
@@ -233,6 +239,12 @@ impl Page {
                 }
             }
         }
+        // the frames' names, which children see through `parent.frames[...]`
+        let names: Vec<String> = {
+            let h = self.host();
+            h.frames.iter().map(|f| h.doc.attr(f.node, "name").unwrap_or("").to_string()).collect()
+        };
+        *self.host().frame_names.borrow_mut() = names;
         // `window[i]` / `frames[i]`
         let g = self.interp.global.clone();
         let wins = child_windows(&mut self.interp);
@@ -307,7 +319,8 @@ impl Page {
         let Some(i) = self.frame_index(node) else { return };
         let outbox = self.host().frames[i].outbox.clone();
         let name = self.host().doc.attr(node, "name").unwrap_or("").to_string();
-        page.host_mut().parent = Some(ParentLink { outbox, parent_origin: origin, depth });
+        let siblings = self.host().frame_names.clone();
+        page.host_mut().parent = Some(ParentLink { outbox, parent_origin: origin, depth, siblings });
         install_child_globals(&mut page.interp, &name);
     }
 
@@ -433,6 +446,7 @@ impl Page {
             let Some(i) = self.frame_index(node) else { continue };
             let ups: Vec<UpMessage> = self.host().frames[i].outbox.borrow_mut().drain(..).collect();
             for m in ups {
+                trace(&format!("drained up (to_top={}, target={}) in", m.to_top, m.target_origin), &self.host().url.to_string().chars().take(60).collect::<String>(), &m.data, m.ports.len());
                 changed = true;
                 let forward_up = m.to_top && self.host().parent.is_some();
                 if forward_up {
@@ -441,8 +455,21 @@ impl Page {
                     }
                     continue;
                 }
+                if let Some(key) = &m.sibling {
+                    // to another of our frames: hand it over, from the sender's sibling proxy
+                    let target = self.frame_by_key(key);
+                    let from = self.frame_key_of(node);
+                    if let Some(t) = target {
+                        if let Some(child) = self.host_mut().frames.iter_mut().find(|f| f.node == t).and_then(|f| f.page.as_mut()) {
+                            if origin_allows(&m.target_origin, &effective_origin(child.host())) {
+                                child.host_mut().inbox.push(Message { data: m.data, origin: m.origin, source: Source::Sibling(from), ports: m.ports });
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let mine = effective_origin(self.host());
-                if m.target_origin != "*" && m.target_origin != "/" && m.target_origin.trim_end_matches('/') != mine {
+                if !origin_allows(&m.target_origin, &mine) {
                     continue;
                 }
                 self.host_mut().inbox.push(Message { data: m.data, origin: m.origin, source: Source::Frame(node), ports: m.ports });
@@ -451,6 +478,24 @@ impl Page {
         changed |= self.deliver_messages();
         changed |= self.deliver_port_messages();
         changed
+    }
+
+    /// Our frame for a sibling key: "#3" (index) or an iframe name.
+    fn frame_by_key(&self, key: &str) -> Option<NodeId> {
+        let h = self.host();
+        match key.strip_prefix('#').and_then(|i| i.parse::<usize>().ok()) {
+            Some(i) => h.frames.get(i).map(|f| f.node),
+            None => h.frames.iter().find(|f| h.doc.attr(f.node, "name") == Some(key)).map(|f| f.node),
+        }
+    }
+
+    /// The key other frames use for one of ours: its name, or "#index".
+    fn frame_key_of(&self, node: NodeId) -> String {
+        let h = self.host();
+        match h.doc.attr(node, "name").filter(|n| !n.is_empty()) {
+            Some(n) => n.to_string(),
+            None => format!("#{}", h.frames.iter().position(|f| f.node == node).unwrap_or(0)),
+        }
     }
 
     /// Navigate a frame (from a link or script inside it, or `location` on its proxy).
@@ -469,12 +514,14 @@ impl Page {
             return false;
         }
         for m in msgs {
+            trace(&format!("deliver window message ({} ports) in", m.ports.len()), &self.host().url.to_string().chars().take(60).collect::<String>(), &m.data, m.ports.len());
             let data = import(&mut self.interp, &m.data);
-            let source = proxy(&mut self.interp, match m.source {
-                Source::Parent => PROXY_PARENT,
-                Source::Top => PROXY_TOP,
-                Source::Frame(n) => n as i64,
-            });
+            let source = match m.source {
+                Source::Parent => proxy(&mut self.interp, PROXY_PARENT),
+                Source::Top => proxy(&mut self.interp, PROXY_TOP),
+                Source::Frame(n) => proxy(&mut self.interp, n as i64),
+                Source::Sibling(k) => sibling_id(&mut self.interp, &k),
+            };
             let port_objs: Vec<Value> = m.ports.iter().map(|&(id, peer)| adopt_port(&mut self.interp, id, peer)).collect();
             let ports = self.interp.new_array(port_objs);
             let init = EventInit { bubbles: false, cancelable: false, props: vec![("data", data), ("origin", Value::str(&m.origin)), ("source", source), ("lastEventId", Value::str("")), ("ports", ports)] };
@@ -855,6 +902,12 @@ pub fn proxy(it: &mut Interp, id: i64) -> Value {
         o.set_hidden("parent", me);
         let top = proxy(it, PROXY_TOP);
         o.set_hidden("top", top);
+    } else if id <= SIBLING_BASE {
+        // one of our parent's other frames: same parent and top as us
+        let parent = proxy(it, PROXY_PARENT);
+        let top = proxy(it, PROXY_TOP);
+        o.set_hidden("parent", parent);
+        o.set_hidden("top", top);
     } else {
         let top = if id == PROXY_TOP || host(it).parent.as_ref().is_some_and(|p| p.depth <= 1) { ov.clone() } else { proxy(it, PROXY_TOP) };
         o.set_hidden("top", top.clone());
@@ -867,7 +920,7 @@ pub fn proxy(it: &mut Interp, id: i64) -> Value {
     for name in ["focus", "blur", "close", "stop", "print"] {
         it.define_method(&o, name, 0, |_, _, _| Ok(Value::Undefined));
     }
-    if id < 0 {
+    if id == PROXY_PARENT || id == PROXY_TOP {
         // `parent.location = url` / `top.location.href = url` navigate the window above
         let loc = it.new_object();
         let to_top = id == PROXY_TOP;
@@ -915,8 +968,82 @@ pub fn proxy(it: &mut Interp, id: i64) -> Value {
         }
         o.set_hidden("location", Value::Obj(loc));
     }
-    host(it).frame_proxies.insert(id, o.clone());
-    ov
+    // the parent and top windows resolve their frames by index or name (`parent.frames[n]`)
+    let out = if id == PROXY_PARENT || id == PROXY_TOP {
+        let g = Value::Obj(it.global.clone());
+        match it.get_str(&g, "__tip_wrap_window") {
+            Ok(f) if f.is_callable() => it.call(&f, Value::Undefined, &[ov.clone()]).unwrap_or(ov),
+            _ => ov,
+        }
+    } else {
+        ov
+    };
+    if let Value::Obj(w) = &out {
+        host(it).frame_proxies.insert(id, w.clone());
+    }
+    out
+}
+
+/// Ids of proxies for the parent's other frames, allocated per key.
+const SIBLING_BASE: i64 = -1000;
+
+fn sibling_id(it: &mut Interp, key: &str) -> Value {
+    let h = host(it);
+    let idx = match h.sibling_keys.iter().position(|k| k == key) {
+        Some(i) => i,
+        None => {
+            h.sibling_keys.push(key.to_string());
+            h.sibling_keys.len() - 1
+        }
+    };
+    proxy(it, SIBLING_BASE - idx as i64)
+}
+
+/// `parent.frames[key]` from inside a frame: a proxy for the parent's frame, or null.
+pub fn frame_lookup(it: &mut Interp, window: i64, key: &str) -> Value {
+    // only direct siblings are known (top, when it is not our parent, is opaque)
+    let parent_is_top = host(it).parent.as_ref().is_some_and(|p| p.depth <= 1);
+    if window == PROXY_TOP && !parent_is_top {
+        return Value::Null;
+    }
+    let Some(names) = host(it).parent.as_ref().map(|p| p.siblings.borrow().clone()) else { return Value::Null };
+    if key == "length" {
+        return Value::Num(names.len() as f64);
+    }
+    let canonical = match key.parse::<usize>() {
+        Ok(i) if i < names.len() => match names[i].as_str() {
+            "" => format!("#{i}"),
+            n => n.to_string(),
+        },
+        Ok(_) => return Value::Null,
+        Err(_) if !key.is_empty() && names.iter().any(|n| n == key) => key.to_string(),
+        Err(_) => return Value::Null,
+    };
+    sibling_id(it, &canonical)
+}
+
+/// Does a `postMessage` targetOrigin ("*", or a URL like "https://a.com:443/x") allow a
+/// window with origin `origin`? The target is parsed, so default ports and paths don't matter.
+fn origin_allows(target: &str, origin: &str) -> bool {
+    if target == "*" || target == origin {
+        return true;
+    }
+    match Url::parse(target) {
+        Some(u) => u.origin() == origin,
+        None => false,
+    }
+}
+
+/// `TIP_TRACE_MESSAGES=1` prints cross-window messages (debugging real sites).
+pub fn trace(kind: &str, from: &str, data: &Cloned, ports: usize) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var("TIP_TRACE_MESSAGES").is_ok()) {
+        let s = format!("{data:?}");
+        let s: String = s.chars().take(160).collect();
+        static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let t = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+        eprintln!("[msg {t:7.2}s] {kind} from {from} ports={ports}: {s}");
+    }
 }
 
 fn post_message(it: &mut Interp, id: i64, args: &[Value]) -> Result<(), Value> {
@@ -938,13 +1065,14 @@ fn post_message(it: &mut Interp, id: i64, args: &[Value]) -> Result<(), Value> {
     };
     let origin = effective_origin(host(it));
     let target_origin = if target_origin == "/" { origin.clone() } else { target_origin };
+    trace(if id >= 0 { "to frame" } else if id == PROXY_TOP { "to top" } else { "to parent" }, &host(it).url.to_string().chars().take(60).collect::<String>(), &data, 0);
     if id >= 0 {
         let node = id as NodeId;
         let h = host(it);
         let Some(f) = h.frames.iter_mut().find(|f| f.node == node) else { return Ok(()) };
         let Some(child) = &mut f.page else { return Ok(()) };
         let child_origin = effective_origin(child.host());
-        if target_origin != "*" && target_origin.trim_end_matches('/') != child_origin {
+        if !origin_allows(&target_origin, &child_origin) {
             return Ok(());
         }
         let ports = transfer_ports(it, &transfer)?;
@@ -957,8 +1085,9 @@ fn post_message(it: &mut Interp, id: i64, args: &[Value]) -> Result<(), Value> {
             return Ok(());
         }
         let ports = transfer_ports(it, &transfer)?;
+        let sibling = if id <= SIBLING_BASE { host(it).sibling_keys.get((SIBLING_BASE - id) as usize).cloned() } else { None };
         if let Some(p) = &host(it).parent {
-            p.outbox.borrow_mut().push(UpMessage { data, origin, target_origin, to_top: id == PROXY_TOP, ports });
+            p.outbox.borrow_mut().push(UpMessage { data, origin, target_origin, to_top: id == PROXY_TOP, ports, sibling });
         }
     }
     Ok(())
@@ -986,7 +1115,7 @@ fn num_prop(it: &mut Interp, o: &Value, k: &str) -> Option<u64> {
 
 /// Detach the MessagePorts in a transfer list from this window. Each becomes an end whose
 /// peer is reached through a mailbox; returns their (id, peer id) for the receiver.
-fn transfer_ports(it: &mut Interp, transfer: &Value) -> Result<Vec<(u64, u64)>, Value> {
+pub fn transfer_ports(it: &mut Interp, transfer: &Value) -> Result<Vec<(u64, u64)>, Value> {
     let Value::Obj(_) = transfer else { return Ok(vec![]) };
     let items = it.iterate_to_vec(transfer)?;
     let mut out = Vec::new();
@@ -1025,7 +1154,7 @@ fn transfer_ports(it: &mut Interp, transfer: &Value) -> Result<Vec<(u64, u64)>, 
 }
 
 /// A MessagePort in this window for a transferred end.
-fn adopt_port(it: &mut Interp, id: u64, peer: u64) -> Value {
+pub fn adopt_port(it: &mut Interp, id: u64, peer: u64) -> Value {
     let g = Value::Obj(it.global.clone());
     let port = match it.get_str(&g, "MessagePort").ok().filter(|c| c.is_callable()) {
         Some(c) => it.construct(&c, &[], None).unwrap_or(Value::Undefined),
@@ -1042,6 +1171,7 @@ fn adopt_port(it: &mut Interp, id: u64, peer: u64) -> Value {
 /// `port.postMessage` for an end whose peer is in another window (called from the prelude).
 pub fn port_send(it: &mut Interp, peer: u64, data: &Value) -> Result<(), Value> {
     let c = export(it, data)?;
+    trace(&format!("port -> {peer}"), &host(it).url.to_string().chars().take(60).collect::<String>(), &c, 0);
     mailboxes().entry(peer).or_default().push(c);
     Ok(())
 }
@@ -1060,6 +1190,9 @@ impl Page {
                 continue;
             }
             any = true;
+            for m in &msgs {
+                trace(&format!("deliver on port {id} in"), &self.host().url.to_string().chars().take(60).collect::<String>(), m, 0);
+            }
             let Some(port) = self.host().ports.get(&id).cloned() else { continue };
             let g = Value::Obj(self.interp.global.clone());
             let Ok(deliver) = self.interp.get_str(&g, "__tip_port_deliver") else { continue };

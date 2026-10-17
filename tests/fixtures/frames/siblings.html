@@ -1,0 +1,2 @@
+<!doctype html><iframe name=alpha src="sibling-a.html"></iframe><iframe name=beta src="sibling-b.html"></iframe>
+<script>window.result = null; addEventListener('message', (e) => { if (e.data.kind === 'sibling-ok') result = e.data; });</script>

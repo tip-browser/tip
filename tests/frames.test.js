@@ -63,6 +63,12 @@ describe('iframes', () => {
     expect(page.url().endsWith('parent.html?navigated')).toBe(true);
   });
 
+  test('frames reach their siblings through parent.frames', () => {
+    page.goto('fixtures/frames/siblings.html');
+    page.waitForFunction('window.result !== null', 3000);
+    expect(page.evaluate('JSON.stringify(result)')).toBe('{"kind":"sibling-ok","sawLength":2,"byIndex":true,"missing":true}');
+  });
+
   test('frames paint into the parent', () => {
     page.goto('fixtures/frames/parent.html');
     page.waitForFunction('!!window.pong', 3000);

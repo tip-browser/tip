@@ -158,7 +158,14 @@ fn text_intrinsic(t: &str, b: &LayoutBox) -> (f32, f32) {
         }
         _ => {
             let mut mn: f32 = 0.0;
+            let anywhere = s.break_anywhere || s.overflow_wrap == 2;
             for w in t.split_whitespace() {
+                if anywhere {
+                    for ch in w.chars() {
+                        mn = mn.max(text::measure(key, s.font_size, ch.encode_utf8(&mut [0; 4]), ls));
+                    }
+                    continue;
+                }
                 for part in hyphen_parts(w) {
                     mn = mn.max(text::measure(key, s.font_size, part, ls));
                 }
@@ -268,8 +275,9 @@ fn walk(children: &[LayoutBox], st: &State, acc: &mut InlineAcc) {
                                 }
                             } else {
                                 cur.push(ch);
-                                // a line may break after a hyphen in a word (as inline layout does)
-                                if ch == '-' && !nowrap && cur.chars().count() > 2 {
+                                // a line may break after a hyphen in a word (as inline layout does),
+                                // or anywhere with word-break: break-all / overflow-wrap: anywhere
+                                if !nowrap && ((ch == '-' && cur.chars().count() > 2) || s.break_anywhere || s.overflow_wrap == 2) {
                                     flush(&mut cur, acc);
                                     acc.min = acc.min.max(acc.word);
                                     acc.word = 0.0;

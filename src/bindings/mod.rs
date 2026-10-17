@@ -1733,10 +1733,16 @@ pub fn install(it: &mut Interp) {
     it.global.set_hidden("document", doc);
     let g = it.global.clone();
     cssom::install(it);
+    crate::workers::install(it);
     // window named access: a bare `foo` finds the element with id="foo"
     it.named_lookup = Some(|it, name| {
         let n = ph(it).doc.get_element_by_id(name)?;
         Some(wrap(it, n))
+    });
+    it.define_method(&g, "__tip_frame_lookup", 2, |it, _, args| {
+        let w = it.to_number(&arg(args, 0))? as i64;
+        let k = it.to_string_lossy(&arg(args, 1));
+        Ok(crate::frames::frame_lookup(it, w, &k))
     });
     it.define_method(&g, "__tip_port_send", 2, |it, _, args| {
         let peer = it.to_number(&arg(args, 0))? as u64;

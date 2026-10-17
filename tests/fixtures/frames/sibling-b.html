@@ -1,0 +1,6 @@
+<!doctype html><script>
+  window.addEventListener('message', (e) => {
+    if (e.data === 'hi back from a') parent.postMessage({ kind: 'sibling-ok', sawLength: parent.frames.length, byIndex: parent.frames[0] === parent.frames['alpha'], missing: parent.frames['nope'] === undefined }, '*');
+  });
+  setTimeout(() => parent.frames['alpha'].postMessage('hi from b', '*'), 50);
+</script>
