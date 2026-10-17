@@ -105,6 +105,24 @@ pub(crate) fn layout_flex(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
                         Some(sv) => content_min.min(sv),
                         None => content_min,
                     }
+                } else if !row && !cs.overflow_y.clips() && !is_replaced {
+                    // column items don't shrink below their content height
+                    let content_min = match measured {
+                        Some((h, _)) => h,
+                        None => {
+                            let stretch = matches!(item_align(&cs.align_self, s.align_items), Align::Stretch) && cs.width.is_auto();
+                            let mode = if stretch { WidthMode::Exact((cw - mar.h()).max(0.0)) } else { WidthMode::Shrink };
+                            let a = Avail { cb_w: cw, cb_h: def_h, mode, forced_h: None, bfc: true };
+                            block::layout_box(c, st, 0.0, 0.0, &a);
+                            measured = Some((c.border_box().h, mode));
+                            c.border_box().h
+                        }
+                    };
+                    let spec = resolve_main_prop(main_prop, main_size).map(to_border_box);
+                    match spec {
+                        Some(sv) => content_min.min(sv),
+                        None => content_min,
+                    }
                 } else {
                     0.0
                 }

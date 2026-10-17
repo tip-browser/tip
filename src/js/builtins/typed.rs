@@ -38,7 +38,7 @@ pub fn bytes_of(v: &Value) -> Option<Vec<u8>> {
 
 pub fn setup(it: &mut Interp) {
     let abp = it.p.arraybuffer.clone();
-    it.define_ctor("ArrayBuffer", 1, &abp, |it, this, args| {
+    let ab_ctor = it.define_ctor("ArrayBuffer", 1, &abp, |it, this, args| {
         it.constructing = false;
         let n = it.to_length(&arg(args, 0))?;
         if n > 1 << 30 {
@@ -49,6 +49,15 @@ pub fn setup(it: &mut Interp) {
             o.borrow_mut().class = "ArrayBuffer";
         }
         Ok(this)
+    });
+    it.define_method(&ab_ctor, "isView", 1, |it, _, args| {
+        let v = arg(args, 0);
+        let typed = matches!(&v, Value::Obj(o) if matches!(o.borrow().kind, ObjKind::TypedArray(_)));
+        let dv = match &v {
+            Value::Obj(_) => it.get_str(&Value::Obj(it.global.clone()), "DataView").ok().is_some_and(|c| c.is_callable() && it.instance_of(&v, &c).unwrap_or(false)),
+            _ => false,
+        };
+        Ok(Value::Bool(typed || dv))
     });
     it.define_getter(&abp, "byteLength", |_, this, _| Ok(Value::Num(bytes_of(&this).map(|b| b.len()).unwrap_or(0) as f64)));
     it.define_method(&abp, "slice", 2, |it, this, args| {
@@ -152,6 +161,40 @@ pub fn setup(it: &mut Interp) {
             base.set_hidden(name, f);
         }
     }
+    // methods that produce a new array return a typed array of the same kind
+    for name in ["map", "filter", "slice"] {
+        let Some(f) = ap.get_own(name) else { continue };
+        it.define_method(&base, name, 1, move |it, this, args| {
+            let t = typed_of(&this).ok_or_else(|| it.make_error("TypeError", "not a typed array"))?;
+            let res = it.call(&f, this.clone(), args)?;
+            let items = super::array_like_to_vec(it, &res)?;
+            let out = TypedKind { buf: Rc::new(RefCell::new(vec![0; items.len() * t.ty.size()])), offset: 0, len: items.len(), ty: t.ty };
+            for (i, v) in items.iter().enumerate() {
+                let n = it.to_number(v)?;
+                out.set(i, n);
+            }
+            Ok(Value::Obj(Obj::new(ObjKind::TypedArray(out), it.p.typed.get(t.ty.name()).cloned(), t.ty.name())))
+        });
+    }
+    // default sort is numeric for typed arrays
+    if let Some(sort) = ap.get_own("sort") {
+        it.define_method(&base, "sort", 1, move |it, this, args| {
+            let cmp = arg(args, 0);
+            if !cmp.is_undefined() {
+                return it.call(&sort, this, args);
+            }
+            let t = typed_of(&this).ok_or_else(|| it.make_error("TypeError", "not a typed array"))?;
+            let mut v: Vec<f64> = (0..t.len).map(|i| t.get(i).unwrap_or(0.0)).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            for (i, n) in v.into_iter().enumerate() {
+                t.set(i, n);
+            }
+            Ok(this)
+        });
+    }
+    let tag = PropKey::Sym(it.sym_to_string_tag.clone());
+    let tag_getter = it.native("get [Symbol.toStringTag]", 0, |_, this, _| Ok(typed_of(&this).map(|t| Value::str(t.ty.name())).unwrap_or(Value::Undefined)));
+    base.borrow_mut().props.insert(tag, Prop { value: Value::Undefined, getter: Some(tag_getter), setter: None, enumerable: false, writable: true, configurable: true });
     let si = it.sym_iterator.clone();
     if let Some(v) = ap.get_own("values") {
         base.borrow_mut().props.insert(PropKey::Sym(si), Prop::hidden(v));

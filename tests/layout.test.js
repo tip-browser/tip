@@ -74,3 +74,12 @@ describe('layout performance', () => {
     expect(Date.now() - t0 < 2000).toBe(true);
   });
 });
+
+describe('flex sizing', () => {
+  test('a column flex item never shrinks below its content (flex-basis 0)', () => {
+    page.setViewport(1280, 713);
+    page.setContent('<body style="margin:0"><div id=outer style="display:flex;flex-direction:column;min-height:100vh"><div style="display:flex;flex-direction:column;flex:1 1 0"><div style="display:flex;flex-grow:1"><div style="min-height:690px;flex:1"></div></div></div><div style="height:137px"></div></div></body>');
+    expect(page.box('#outer').height).toBe(827);
+    page.setViewport(1024, 768);
+  });
+});

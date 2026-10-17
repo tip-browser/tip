@@ -96,6 +96,9 @@ pub fn node_list(it: &mut Interp, ids: Vec<NodeId>) -> Value {
     let items: Vec<Value> = ids.into_iter().map(|i| wrap(it, i)).collect();
     let arr = it.new_array(items);
     if let Value::Obj(o) = &arr {
+        o.borrow_mut().class = "NodeList";
+        let tag = PropKey::Sym(it.sym_to_string_tag.clone());
+        o.borrow_mut().props.insert(tag, Prop::hidden(Value::str("NodeList")));
         let item = it.native("item", 1, |it, this, args| {
             let i = it.to_integer(&arg(args, 0))?;
             let v = it.get(&this, &PropKey::Str(Rc::from((i.max(0.0) as usize).to_string().as_str())))?;
@@ -1667,7 +1670,7 @@ pub fn install(it: &mut Interp) {
 
     // constructors for instanceof checks
     let illegal = |name: &'static str| move |it: &mut Interp, _: Value, _: &[Value]| -> R<Value> { throw!(it, "TypeError", "Illegal constructor: {name}") };
-    for (name, proto) in [("EventTarget", &p.event_target), ("Node", &p.node), ("Element", &p.element), ("HTMLElement", &p.html_element), ("Document", &p.document), ("HTMLDocument", &p.document), ("CharacterData", &char_data), ("Text", &p.text), ("Comment", &p.comment), ("DocumentFragment", &p.fragment), ("CSSStyleDeclaration", &p.style_decl), ("DOMTokenList", &p.token_list)] {
+    for (name, proto) in [("Node", &p.node), ("Element", &p.element), ("HTMLElement", &p.html_element), ("Document", &p.document), ("HTMLDocument", &p.document), ("CharacterData", &char_data), ("Text", &p.text), ("Comment", &p.comment), ("DocumentFragment", &p.fragment), ("CSSStyleDeclaration", &p.style_decl), ("DOMTokenList", &p.token_list)] {
         it.define_ctor(name, 0, proto, illegal(name));
     }
     for (name, proto) in &named {
@@ -1683,4 +1686,23 @@ pub fn install(it: &mut Interp) {
     window::install(it);
     let doc = wrap(it, 0);
     it.global.set_hidden("document", doc);
+    let g = it.global.clone();
+    it.define_method(&g, "__tip_blob_register", 3, |it, _, args| {
+        let url = it.to_string_lossy(&arg(args, 0));
+        let bytes = crate::js::builtins::typed::bytes_of(&arg(args, 1)).unwrap_or_default();
+        let mime = it.to_string_lossy(&arg(args, 2));
+        crate::net::register_blob(&url, &mime, bytes);
+        Ok(Value::Undefined)
+    });
+    it.define_method(&g, "__tip_blob_revoke", 1, |it, _, args| {
+        let url = it.to_string_lossy(&arg(args, 0));
+        crate::net::revoke_blob(&url);
+        Ok(Value::Undefined)
+    });
+    // web APIs written in JavaScript
+    if let Err(e) = it.eval_script(include_str!("prelude.js"), "tip:prelude") {
+        let msg = it.describe_error(&e);
+        eprintln!("tip: prelude failed: {msg} (line {})", it.cur_line + 1);
+    }
+    it.completion = Value::Undefined;
 }

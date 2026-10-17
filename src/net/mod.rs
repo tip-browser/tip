@@ -297,12 +297,33 @@ pub fn fetch(req: &Request) -> Result<Response, String> {
     fetch_uncached(req)
 }
 
+fn blob_store() -> std::sync::MutexGuard<'static, HashMap<String, (String, Vec<u8>)>> {
+    static B: std::sync::OnceLock<Mutex<HashMap<String, (String, Vec<u8>)>>> = std::sync::OnceLock::new();
+    B.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Register the bytes behind a `blob:` URL (URL.createObjectURL).
+pub fn register_blob(url: &str, mime: &str, data: Vec<u8>) {
+    blob_store().insert(url.to_string(), (mime.to_string(), data));
+}
+
+pub fn revoke_blob(url: &str) {
+    blob_store().remove(url);
+}
+
 fn fetch_uncached(req: &Request) -> Result<Response, String> {
     let mut req = req.clone();
     for _ in 0..10 {
         let url = req.url.clone();
         let resp = match url.scheme.as_str() {
             "data" => return data_url(&url),
+            "blob" => {
+                let key = url.without_fragment().to_string();
+                return match blob_store().get(&key) {
+                    Some((mime, data)) => Ok(ok(&url, if mime.is_empty() { "application/octet-stream" } else { mime }, data.clone())),
+                    None => Err(format!("Not found: {key}")),
+                };
+            }
             "file" => return file_url(&url),
             "about" => return Ok(ok(&url, "text/html; charset=utf-8", crate::pages::about(&url.path).into_bytes())),
             "tip" => {

@@ -660,6 +660,18 @@ fn body_bytes(it: &mut Interp, body: &Value, headers: &mut Vec<(String, String)>
             if let Some(b) = crate::js::builtins::typed::bytes_of(v) {
                 return Ok(Some(b));
             }
+            // Blob (prelude) exposes its bytes and type
+            let bb = it.get_str(v, "__tipBytes")?;
+            if bb.is_callable() {
+                let bytes = it.call(&bb, v.clone(), &[])?;
+                let ty = it.get_str(v, "type")?;
+                if let Value::Str(t) = &ty {
+                    if !t.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+                        headers.push(("Content-Type".into(), t.to_string()));
+                    }
+                }
+                return Ok(crate::js::builtins::typed::bytes_of(&bytes));
+            }
             // URLSearchParams / FormData expose a urlencoded serialization
             let ser = it.get_str(v, "__tipSerialize")?;
             if ser.is_callable() {
@@ -1512,7 +1524,24 @@ pub fn install(it: &mut Interp) {
         promise::promise_resolve(it, s(t))
     });
     nav.set_prop("clipboard", Value::Obj(clip));
-    it.define_method(&nav, "sendBeacon", 2, |_, _, _| Ok(Value::Bool(true)));
+    it.define_method(&nav, "sendBeacon", 2, |it, _, args| {
+        let u = it.to_string_lossy(&arg(args, 0));
+        let Some(url) = ph(it).resolve_url(&u) else { throw!(it, "TypeError", "Failed to execute 'sendBeacon' on 'Navigator': Invalid URL '{u}'") };
+        if !matches!(url.scheme.as_str(), "http" | "https") {
+            return Ok(Value::Bool(false));
+        }
+        let mut headers = ph(it).request_headers("POST", &url);
+        let body = body_bytes(it, &arg(args, 1), &mut headers)?;
+        if body.as_ref().is_some_and(|b| b.len() > 64 * 1024) {
+            return Ok(Value::Bool(false));
+        }
+        let req = Request { method: "POST".into(), url, headers, body: Some(body.unwrap_or_default()) };
+        // fire and forget; the page may be unloading
+        std::thread::spawn(move || {
+            let _ = net::fetch(&req);
+        });
+        Ok(Value::Bool(true))
+    });
     it.define_method(&nav, "vibrate", 1, |_, _, _| Ok(Value::Bool(false)));
     g.set_hidden("navigator", Value::Obj(nav));
     let screen = it.new_object();

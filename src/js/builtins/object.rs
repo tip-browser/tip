@@ -134,12 +134,7 @@ pub fn setup(it: &mut Interp) {
             }
             let so = it.to_object(src)?;
             let sv = Value::Obj(so.clone());
-            for k in it.own_keys(&so, false) {
-                let v = it.get(&sv, &k)?;
-                it.set(&tv, k, v)?;
-            }
-            let syms: Vec<PropKey> = so.borrow().props.iter().filter(|(k, p)| matches!(k, PropKey::Sym(_)) && p.enumerable).map(|(k, _)| k.clone()).collect();
-            for k in syms {
+            for k in it.own_keys_with_symbols(&so, false) {
                 let v = it.get(&sv, &k)?;
                 it.set(&tv, k, v)?;
             }
@@ -155,7 +150,7 @@ pub fn setup(it: &mut Interp) {
         let o = Obj::new(ObjKind::Ordinary, proto, "Object");
         let props = arg(args, 1);
         if let Value::Obj(po) = &props {
-            for k in it.own_keys(po, false) {
+            for k in it.own_keys_with_symbols(po, false) {
                 let d = it.get(&props, &k)?;
                 define_property(it, &Value::Obj(o.clone()), &k.to_value(), &d)?;
             }
@@ -183,7 +178,7 @@ pub fn setup(it: &mut Interp) {
         let t = arg(args, 0);
         let props = arg(args, 1);
         let po = it.to_object(&props)?;
-        for k in it.own_keys(&po, false) {
+        for k in it.own_keys_with_symbols(&po, false) {
             let d = it.get(&props, &k)?;
             define_property(it, &t, &k.to_value(), &d)?;
         }
@@ -210,7 +205,7 @@ pub fn setup(it: &mut Interp) {
     it.define_method(&ctor, "getOwnPropertyDescriptors", 1, |it, _, args| {
         let o = it.to_object(&arg(args, 0))?;
         let out = it.new_object();
-        for k in it.own_keys(&o, true) {
+        for k in it.own_keys_with_symbols(&o, true) {
             let d = descriptor(it, &o, &k)?;
             out.borrow_mut().props.insert(k, Prop::data(d));
         }

@@ -859,6 +859,16 @@ impl Interp {
         Ok(true)
     }
 
+    /// Own keys including symbols (strings first), enumerable only unless `include_hidden`:
+    /// what Object.assign, spread, defineProperties etc. copy.
+    pub fn own_keys_with_symbols(&mut self, o: &Obj, include_hidden: bool) -> Vec<PropKey> {
+        let mut keys = self.own_keys(o, include_hidden);
+        let target = o.proxy().map(|p| p.target.clone()).unwrap_or_else(|| o.clone());
+        let syms: Vec<PropKey> = target.borrow().props.iter().filter(|(k, p)| matches!(k, PropKey::Sym(_)) && (include_hidden || p.enumerable)).map(|(k, _)| k.clone()).collect();
+        keys.extend(syms);
+        keys
+    }
+
     /// Own enumerable string keys (for Object.keys / for-in / spread).
     pub fn own_keys(&mut self, o: &Obj, include_hidden: bool) -> Vec<PropKey> {
         if let Some(p) = o.proxy() {
@@ -2476,7 +2486,7 @@ impl Interp {
                         continue;
                     }
                     if let Value::Obj(src) = &v {
-                        for k in self.own_keys(src, false) {
+                        for k in self.own_keys_with_symbols(src, false) {
                             let val = self.get(&v, &k)?;
                             o.borrow_mut().props.insert(k, Prop::data(val));
                         }
@@ -2784,7 +2794,9 @@ impl Interp {
     pub fn instance_of(&mut self, v: &Value, f: &Value) -> R<bool> {
         let Value::Obj(fo) = f else { throw!(self, "TypeError", "Right-hand side of 'instanceof' is not callable") };
         let hi = self.get(f, &PropKey::Sym(self.sym_has_instance.clone()))?;
-        if hi.is_callable() && !matches!(&hi, Value::Obj(h) if h.borrow().class == "Function" && h.get_own("name").is_some_and(|n| matches!(n, Value::Str(ref s) if &**s == "[Symbol.hasInstance]"))) {
+        // the default Function.prototype[Symbol.hasInstance] is native; user-defined ones run
+        let is_default = matches!(&hi, Value::Obj(h) if matches!(h.borrow().kind, ObjKind::Function(Func::Native { .. })) && h.get_own("name").is_some_and(|n| matches!(n, Value::Str(ref s) if &**s == "[Symbol.hasInstance]")));
+        if hi.is_callable() && !is_default {
             return Ok(self.call(&hi, f.clone(), std::slice::from_ref(v))?.truthy());
         }
         if !fo.is_callable() {
