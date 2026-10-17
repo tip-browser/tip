@@ -9,6 +9,7 @@ tip render page.html -o shot.png --full-page --scale 2
 tip test tests/             # run JavaScript automation tests
 tip dump layout page.html   # inspect the layout tree
 tip eval page.html "document.title"
+tip rust program.rs         # run Rust with the in-page Rust runtime
 ```
 
 ## Building
@@ -52,7 +53,7 @@ CI (`.github/workflows/ci.yml`) builds and tests on Linux, macOS and Windows, an
 
 **Text.** A built-in TrueType parser and rasterizer (composite glyphs, kerning, synthetic bold/italic) using system fonts, with fallback fonts for other scripts.
 
-**Images.** Our own DEFLATE and PNG decoder (all colour types, interlacing). Images load on background threads.
+**Images.** Our own decoders for PNG (all colour types, interlacing, using our own DEFLATE), JPEG (baseline and progressive, with EXIF orientation) and GIF, plus a renderer for inline SVG. Images load on background threads.
 
 **Networking.** An HTTP/1.1 client with chunked encoding, gzip/deflate, redirects and cookies. HTTPS goes through the OS. Also `file:`, `data:` and `about:` URLs, and the internal `tip:` scheme.
 
@@ -63,6 +64,26 @@ CI (`.github/workflows/ci.yml`) builds and tests on Linux, macOS and Windows, an
 - generators, `async`/`await` and `for await`, labelled statements
 - its own regex engine (lookbehind, named groups, flags)
 - the standard library: Object, Array, String, Number, Math, JSON, Date, RegExp, Promise, Map/Set/WeakMap, Symbol, typed arrays, Reflect
+
+**Rust in the page.** Pages can ship Rust source in `<script type="text/rust">` (inline or with `src`). Tip compiles it from scratch when the page loads and runs it in a sandbox: there's no native code, file system or threads, and the program is discarded when you leave the page.
+- `fn main()` runs at load. Functions marked `#[export]` can be called from JavaScript as `rust.name(...)`; arguments and results convert both ways.
+- The `web` module covers DOM access:
+  - finding and creating elements: `by_id`, `query`, `query_all`, `create`;
+  - reading and changing elements: `set_text`, `set_html`, `set_attr`, `add_class`, `set_style`, `value`, `append`;
+  - events and timers: `el.on("click", move |ev| ...)`, `set_timeout`, `set_interval`, `request_animation_frame`;
+  - other browser features: `fetch_text`, `local_storage_get` / `local_storage_set`, `alert`, `eval`.
+  
+  Any other method on an element falls through to the JavaScript object, for example `ev.prevent_default()`.
+- Supported language features:
+  - structs, enums, `impl` blocks, traits (default methods, associated consts, `dyn Trait`) and generics;
+  - closures, pattern matching (slice and range patterns, guards, bindings), `?`, labelled loops;
+  - operator overloading, `#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, ...)]`;
+  - `format!` with the full format-spec syntax.
+- Standard library: `String`/`&str`, `Vec`, `VecDeque`, `HashMap`/`BTreeMap` (including the entry API), `HashSet`/`BTreeSet`, `Option`/`Result`, `Rc`/`RefCell`/`Cell`, and lazy iterators with the usual adapters plus type-directed `collect()` / `parse()` / `sum()`.
+- Runtime checks follow Rust: integer overflow, out-of-bounds indexing and `unwrap` on `None` panic with Rust's messages. Compile errors are reported in rustc's format in the console.
+- There is no borrow checker. Values are dynamically typed at run time, and the declared types steer conversions.
+
+See [examples/rust.html](examples/rust.html).
 
 **DOM and Web APIs**
 - Nodes and elements: traversal and mutation, `classList`, `dataset`, `style`, `getBoundingClientRect` / offset properties, `getComputedStyle`.
@@ -123,6 +144,7 @@ src/
   image/                    inflate (+zlib/gzip), PNG decode/encode
   net/                      URL parsing, HTTP/1.1 client, OS TLS bridge, cookies
   js/                       lexer, parser, interpreter, builtins, regex, coroutines
+  rust/                     in-page Rust: lexer, parser, closure compiler, std library, `web` bridge
   bindings/                 DOM host objects, events, window APIs
   page.rs input.rs tab.rs   documents, input handling, navigation/history
   app.rs devtools.rs        browser UI (rendered by the engine) and DevTools
@@ -134,6 +156,7 @@ How the design fits together:
 
 - **Generators and `async` functions.** These need to suspend mid-function, which a tree-walking interpreter can't do on its own. Each one runs on its own OS thread. Control passes between threads over channels, so exactly one thread runs JavaScript at a time.
 - **Recursion limit.** Deep JS recursion is bounded by measuring how much native stack is actually in use, rather than by a fixed call depth. `build.rs` gives the main thread a 256 MB stack.
+- **Rust scripts.** The compiler turns each function body into a tree of Rust closures with pre-resolved local slots, so nothing is re-parsed or looked up by name at run time. Variables captured by closures are moved into shared cells. `&mut` borrows are represented as references to places (a local, a field, a vector element or a map value). A deadline and a native-stack budget stop runaway programs.
 - **Page loads.** Documents are fetched on a background thread, which also prefetches their stylesheets and scripts in parallel. The page is then built on the main thread.
 
 ## Known limitations
@@ -142,9 +165,9 @@ These are areas the engine doesn't cover yet:
 
 - right-to-left and complex-script shaping (e.g. Arabic)
 - colour emoji
-- JPEG, GIF and WebP (shown as alt text)
-- `<canvas>`, SVG rendering, video
+- WebP (shown as alt text), animated GIFs (first frame only)
+- `<canvas>`, video, SVG filters and text
 - CSS transforms other than translate, animations and transitions
-- ES modules, Shadow DOM, Web Workers
+- Shadow DOM, Web Workers
 - IME input
 - Windows: the release `tip.exe` is a GUI-subsystem binary, so console output from CLI commands attaches to the parent console.

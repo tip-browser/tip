@@ -1,0 +1,33 @@
+[1, 2, 3, 4, 5]
+total 18
+tree 16
+rc count 2
+[1, 2, 3]
+40 11
+counter 3
+9 1.5 z
+Some("b") 2
+Some("b") false
+set len 2
+{"a": 2, "m": 3, "z": 1}
+a=2 m=3 z=1 
+0,1,2,
+Stats { count: 3, total: 12 }
+[9, 6, 5, 4, 3, 2, 1] max=Some(9) pos=Some(3)
+["a", "b", "", "c"] a|b||c
+true
+84
+hi there! 9 hi
+xxx
+[[1, 2, 3], [4, 5, 6], [7]]
+[[0, 0], [7, 0]]
+None 4
+g 2
+0
+[(0, 'a'), (1, 'b'), (2, 'c')]
+12345
+found 1 2
+5 6
+odd
+3 -1 1024 2
+None

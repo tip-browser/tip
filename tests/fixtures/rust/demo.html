@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rust in Tip</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1d1d1f; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .sub { color: #666; margin-top: 0; }
+  section { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 18px 0; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid #bbb; background: #f6f6f6; cursor: pointer; }
+  input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #bbb; }
+  #count { font-size: 28px; font-weight: 600; margin: 0 12px; vertical-align: middle; }
+  ul { padding-left: 20px; }
+  li.done { text-decoration: line-through; color: #888; }
+  #primes { font-family: Menlo, monospace; font-size: 13px; word-break: break-all; }
+  code { background: #f2f2f2; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>Rust in the page</h1>
+<p class="sub">This page ships Rust source in <code>&lt;script type="text/rust"&gt;</code>. Tip compiles it when the page loads and throws it away when you leave.</p>
+
+<section>
+  <h2>Counter</h2>
+  <button id="dec">−</button><span id="count">0</span><button id="inc">+</button>
+</section>
+
+<section>
+  <h2>Todo</h2>
+  <input id="todo-text" placeholder="Something to do"> <button id="add">Add</button>
+  <ul id="todos"></ul>
+  <p id="todo-status"></p>
+</section>
+
+<section>
+  <h2>Primes (exported to JavaScript)</h2>
+  <input id="limit" type="number" value="100"> <button id="sieve">Sieve</button>
+  <p id="primes"></p>
+</section>
+
+<script type="text/rust">
+use std::cell::RefCell;
+use std::rc::Rc;
+use web::*;
+
+struct Todo { text: String, done: bool }
+
+fn render(todos: &Rc<RefCell<Vec<Todo>>>) {
+    let list = by_id("todos").unwrap();
+    list.clear();
+    for (i, t) in todos.borrow().iter().enumerate() {
+        let li = create("li");
+        li.set_text(&t.text);
+        if t.done { li.add_class("done"); }
+        let todos2 = todos.clone();
+        li.on("click", move |_| {
+            {
+                let mut v = todos2.borrow_mut();
+                v[i].done = !v[i].done;
+            }
+            render(&todos2);
+        });
+        list.append(li);
+    }
+    let left = todos.borrow().iter().filter(|t| !t.done).count();
+    by_id("todo-status").unwrap().set_text(&format!("{left} of {} left", todos.borrow().len()));
+}
+
+#[export]
+fn primes(limit: usize) -> Vec<usize> {
+    let mut sieve = vec![true; limit + 1];
+    let mut out = Vec::new();
+    for n in 2..=limit {
+        if sieve[n] {
+            out.push(n);
+            let mut m = n * n;
+            while m <= limit { sieve[m] = false; m += n; }
+        }
+    }
+    out
+}
+
+fn main() {
+    let count = Rc::new(RefCell::new(0i32));
+    for (id, delta) in [("inc", 1), ("dec", -1)] {
+        let count = count.clone();
+        by_id(id).unwrap().on("click", move |_| {
+            *count.borrow_mut() += delta;
+            by_id("count").unwrap().set_text(&count.borrow().to_string());
+        });
+    }
+
+    let todos = Rc::new(RefCell::new(vec![
+        Todo { text: "Write Rust".into(), done: true },
+        Todo { text: "Run it in Tip".into(), done: false },
+    ]));
+    render(&todos);
+    let t = todos.clone();
+    by_id("add").unwrap().on("click", move |_| {
+        let input = by_id("todo-text").unwrap();
+        let text = input.value().trim().to_string();
+        if !text.is_empty() {
+            t.borrow_mut().push(Todo { text, done: false });
+            input.set_value("");
+            render(&t);
+        }
+    });
+
+    by_id("sieve").unwrap().on("click", |_| {
+        let limit: usize = by_id("limit").unwrap().value().parse().unwrap_or(100);
+        let ps = primes(limit.min(100_000));
+        let shown: Vec<String> = ps.iter().take(200).map(|p| p.to_string()).collect();
+        by_id("primes").unwrap().set_text(&format!("{} primes: {}{}", ps.len(), shown.join(" "), if ps.len() > 200 { " …" } else { "" }));
+    });
+
+    println!("Rust session started");
+}
+</script>
+</body>
+</html>

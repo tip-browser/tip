@@ -1137,6 +1137,10 @@ impl Page {
             self.run_module_script(s, src, text);
             return;
         }
+        if matches!(ty.trim(), "text/rust" | "application/rust" | "rust") {
+            self.run_rust_script(s, src, text);
+            return;
+        }
         if !(ty.is_empty() || ty.contains("javascript") || ty.contains("ecmascript")) || self.host().doc.attr(s, "nomodule").is_some() {
             return;
         }
@@ -1162,6 +1166,39 @@ impl Page {
         };
         self.host_mut().current_script = Some(s);
         let _ = self.eval(&code, &name);
+        self.host_mut().current_script = None;
+    }
+
+    /// `<script type="text/rust">`: compile the Rust source with the built-in runtime and run
+    /// its `main`. The compiled program belongs to this page and is dropped with it.
+    fn run_rust_script(&mut self, s: NodeId, src: Option<String>, text: String) {
+        let (code, name) = match src {
+            Some(src) => {
+                let Some(u) = self.host().resolve_url(&src) else { return };
+                let mut log = Vec::new();
+                let r = net::fetch_logged(&Request::get(u.clone()), "script", &mut log);
+                self.host_mut().net_log.extend(log);
+                match r {
+                    Ok(resp) if resp.ok() => (resp.text(), u.path.rsplit('/').next().unwrap_or("main.rs").to_string()),
+                    Ok(resp) => {
+                        self.host_mut().log("error", format!("Failed to load script {u}: HTTP {}", resp.status));
+                        return;
+                    }
+                    Err(e) => {
+                        self.host_mut().log("error", format!("Failed to load script {u}: {e}"));
+                        return;
+                    }
+                }
+            }
+            None => (text, "inline.rs".to_string()),
+        };
+        self.host_mut().current_script = Some(s);
+        self.interp.deadline = Some(Instant::now() + Duration::from_secs(10));
+        let prev = std::mem::replace(&mut self.interp.script_name, name.clone());
+        crate::rust::run_in_page(&mut self.interp, &code, &name);
+        self.interp.deadline = None;
+        self.after_task();
+        self.interp.script_name = prev;
         self.host_mut().current_script = None;
     }
 

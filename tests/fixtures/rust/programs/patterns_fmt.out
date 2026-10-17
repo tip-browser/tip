@@ -1,0 +1,33 @@
+4 sides, area 4.00
+3 sides, area 6.00
+10.0
+-2+1i 1-3i -1+3i
+3 2
+["Amy", "Bob", "Zed"]
+Zed
+[("eng", 2), ("art", 1)]
+Ok([25])
+Err("underflow")
+Err("pop on empty at 0")
+empty | one negative | one | same ends | long | short | 
+6
+khoor, zruog
+[      3.14] [ab  ] [+5] [1.2345e3]
+"q\"uote\n" 'c' '\''
+a b a n
+Ok(2) Err(2) [30, 10]
+[10, 10, 10]
+[2, 4, 6, 8] [1, 3, 5, 7, 9]
+Tqbf brown 2
+shadow 10
+[0, 100, 200]
+-3 -2 17 4
+0 44
+["a3", "b1", "n2"]
+Less Some(Greater) true
+Some("b")
+[("k1", "v1"), ("k2", "v2"), ("k3", "")]
+.....
+..#..
+.....
+2432902008176640000

@@ -18,6 +18,8 @@ USAGE:
     tip dump dom|layout|text URL      Print the DOM tree, layout tree or page text
     tip eval URL CODE                 Load a page, evaluate JavaScript, print the result
     tip js FILE                       Run a JavaScript file in a bare engine
+    tip rust FILE.rs                  Run a Rust file with the in-page Rust runtime
+    tip image FILE [-o out.png]       Decode an image with the built-in decoders
     tip version                       Print the version
 
 Inside the browser window:
@@ -143,6 +145,28 @@ fn run(args: Vec<String>) -> i32 {
             print_console(&tab);
             0
         }
+        "rust" => {
+            // run a Rust file with the in-page Rust runtime (no page; `web` APIs unavailable)
+            let pos = positional(&rest);
+            let Some(input) = pos.first() else {
+                eprintln!("usage: tip rust FILE.rs");
+                return 2;
+            };
+            let src = match std::fs::read_to_string(input) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{input}: {e}");
+                    return 1;
+                }
+            };
+            let (out, err) = tip::rust::run_headless(&src, input);
+            print!("{out}");
+            if let Some(e) = err {
+                eprintln!("{e}");
+                return 101;
+            }
+            0
+        }
         "image" => {
             // decode an image file with the built-in decoders (debugging aid)
             let pos = positional(&rest);
@@ -242,7 +266,7 @@ fn run(args: Vec<String>) -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let windowed = args.is_empty() || !matches!(args[0].as_str(), "help" | "--help" | "-h" | "version" | "--version" | "-V" | "render" | "test" | "dump" | "eval" | "js" | "image");
+    let windowed = args.is_empty() || !matches!(args[0].as_str(), "help" | "--help" | "-h" | "version" | "--version" | "-V" | "render" | "test" | "dump" | "eval" | "js" | "image" | "rust");
     if !windowed {
         attach_console();
     }

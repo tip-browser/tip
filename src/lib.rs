@@ -21,3 +21,4 @@ pub mod automation;
 pub mod tab;
 pub mod app;
 pub mod devtools;
+pub mod rust;
