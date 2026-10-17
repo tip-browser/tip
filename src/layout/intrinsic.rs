@@ -142,6 +142,8 @@ fn compute(b: &LayoutBox, st: &State) -> (f32, f32) {
 
 fn text_intrinsic(t: &str, b: &LayoutBox) -> (f32, f32) {
     let s = &b.style;
+    let transformed = super::inline::transform(t, s.text_transform, true);
+    let t = transformed.as_str();
     let key = FontKey::new(s.font_family, s.font_weight, s.italic);
     let ls = s.letter_spacing;
     match s.white_space {
@@ -199,6 +201,8 @@ fn walk(children: &[LayoutBox], st: &State, acc: &mut InlineAcc) {
         match &c.inner {
             Inner::Text(t) => {
                 let s = &c.style;
+                let transformed = super::inline::transform(t, s.text_transform, true);
+                let t = &transformed;
                 let key = FontKey::new(s.font_family, s.font_weight, s.italic);
                 let space_w = text::measure(key, s.font_size, " ", s.letter_spacing) + s.word_spacing;
                 match s.white_space {

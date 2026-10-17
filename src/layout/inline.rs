@@ -70,7 +70,7 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
 }
 
-fn transform(text: &str, t: TextTransform, prev_space: bool) -> String {
+pub(crate) fn transform(text: &str, t: TextTransform, prev_space: bool) -> String {
     match t {
         TextTransform::None => text.to_string(),
         TextTransform::Upper => text.to_uppercase(),
@@ -482,6 +482,21 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State) -> f32 {
                     ld = h - la;
                 }
             }
+        }
+        // A line with only empty inline boxes (no text, atomics, breaks, or horizontal
+        // margin/border/padding) is a phantom line box and takes no height.
+        let phantom = (start..end).all(|k| {
+            hidden[k - start]
+                || match &items[k] {
+                    Item::Word { space, collapsible, .. } => *space && *collapsible,
+                    Item::Atomic { .. } | Item::Break => false,
+                    Item::Open { extra, .. } | Item::Close { extra, .. } => extra.abs() < 0.01,
+                    _ => true,
+                }
+        }) && open.is_empty();
+        if phantom {
+            la = 0.0;
+            ld = 0.0;
         }
         let line_h = la + ld;
         let baseline = y + la;

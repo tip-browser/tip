@@ -462,8 +462,38 @@ fn install_page_api(it: &mut Interp) {
     }
 }
 
+/// Resolve a path relative to the running test file.
+fn test_path(it: &mut Interp, path: &str) -> std::path::PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        th(it).file.parent().unwrap_or(Path::new(".")).join(p)
+    }
+}
+
 fn install_test_api(it: &mut Interp) {
     let g = it.global.clone();
+    it.define_method(&g, "writeFile", 2, |it, _, args| {
+        let path = it.to_str(&arg(args, 0))?.to_string();
+        let text = it.to_str(&arg(args, 1))?.to_string();
+        let p = test_path(it, &path);
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&p, text) {
+            throw!(it, "Error", "writeFile {}: {e}", p.display());
+        }
+        Ok(Value::str(&p.to_string_lossy()))
+    });
+    it.define_method(&g, "readFile", 1, |it, _, args| {
+        let path = it.to_str(&arg(args, 0))?.to_string();
+        let p = test_path(it, &path);
+        match std::fs::read_to_string(&p) {
+            Ok(s) => Ok(Value::str(&s)),
+            Err(e) => throw!(it, "Error", "readFile {}: {e}", p.display()),
+        }
+    });
     it.define_method(&g, "test", 2, |it, _, args| {
         let name = it.to_str(&arg(args, 0))?.to_string();
         let t = th(it);

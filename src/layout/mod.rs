@@ -121,6 +121,9 @@ pub struct LayoutBox {
     pub colspan: usize,
     /// Top margin has been collapsed into the parent.
     pub collapsed_top: bool,
+    /// `<fieldset>` with a rendered legend: the legend's x-range relative to the border box
+    /// (where the top border is interrupted) and how far below the box top the border is drawn.
+    pub legend_gap: Option<(f32, f32, f32)>,
     pub(crate) intrinsic: Cell<Option<(f32, f32)>>,
 }
 
@@ -145,6 +148,7 @@ impl LayoutBox {
             is_pseudo: false,
             colspan: 1,
             collapsed_top: false,
+            legend_gap: None,
             intrinsic: Cell::new(None),
         }
     }

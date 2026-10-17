@@ -76,6 +76,8 @@ fn marker_text(style: ListStyle, index: i64) -> Option<String> {
         ListStyle::Disc => "•".into(),
         ListStyle::Circle => "◦".into(),
         ListStyle::Square => "▪".into(),
+        ListStyle::DisclosureOpen => "▼".into(),
+        ListStyle::DisclosureClosed => "►".into(),
         ListStyle::Decimal => format!("{index}."),
         ListStyle::LowerAlpha | ListStyle::UpperAlpha => {
             let mut n = index.max(1) as u32;
@@ -158,7 +160,13 @@ fn build_element(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox
     }
     let replaced = replaced_kind(doc, node);
     if replaced.is_none() {
+        // a closed <details> shows only its first <summary>
+        let closed_details = tag == "details" && doc.attr(node, "open").is_none();
+        let summary = if closed_details { doc.children(node).iter().copied().find(|&c| doc.tag(c) == Some("summary")) } else { None };
         for &c in doc.children(node) {
+            if closed_details && Some(c) != summary {
+                continue;
+            }
             match &doc.node(c).data {
                 NodeData::Element(_) => children.extend(build_element(doc, styles, c)),
                 NodeData::Text(t) => {

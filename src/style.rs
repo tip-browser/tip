@@ -237,6 +237,8 @@ pub enum ListStyle {
     UpperAlpha,
     LowerRoman,
     UpperRoman,
+    DisclosureOpen,
+    DisclosureClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1887,10 +1889,54 @@ fn copy_prop(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
     }
 }
 
+/// Map a logical property name to its physical equivalent (horizontal, left-to-right).
+fn physical_name(name: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match name {
+        "border-start-start-radius" => return Cow::Borrowed("border-top-left-radius"),
+        "border-start-end-radius" => return Cow::Borrowed("border-top-right-radius"),
+        "border-end-start-radius" => return Cow::Borrowed("border-bottom-left-radius"),
+        "border-end-end-radius" => return Cow::Borrowed("border-bottom-right-radius"),
+        "inset-block-start" => return Cow::Borrowed("top"),
+        "inset-block-end" => return Cow::Borrowed("bottom"),
+        "inset-inline-start" => return Cow::Borrowed("left"),
+        "inset-inline-end" => return Cow::Borrowed("right"),
+        _ => {}
+    }
+    if !(name.contains("-inline-") || name.contains("-block-")) || name.starts_with("--") {
+        return Cow::Borrowed(name);
+    }
+    let n = name.replace("-inline-start", "-left").replace("-inline-end", "-right").replace("-block-start", "-top").replace("-block-end", "-bottom");
+    Cow::Owned(n)
+}
+
 fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: &[Tok], cx: &Ctx) {
     let comps = components(value);
     if comps.is_empty() {
         return;
+    }
+    let phys = physical_name(name);
+    let name: &str = &phys;
+    // two-value logical shorthands: inset-inline, inset-block, border-inline-width, ...
+    if let Some([start, end]) = match name {
+        "inset-inline" => Some(["left", "right"]),
+        "inset-block" => Some(["top", "bottom"]),
+        _ => None,
+    } {
+        let (a, b) = (comps[0].clone(), comps.get(1).unwrap_or(&comps[0]).clone());
+        apply_decl(s, parent, start, &a, cx);
+        apply_decl(s, parent, end, &b, cx);
+        return;
+    }
+    for (logical, a, b) in [("border-inline-", "border-left-", "border-right-"), ("border-block-", "border-top-", "border-bottom-")] {
+        if let Some(prop) = name.strip_prefix(logical) {
+            if matches!(prop, "width" | "color" | "style") {
+                let (x, y) = (comps[0].clone(), comps.get(1).unwrap_or(&comps[0]).clone());
+                apply_decl(s, parent, &format!("{a}{prop}"), &x, cx);
+                apply_decl(s, parent, &format!("{b}{prop}"), &y, cx);
+                return;
+            }
+        }
     }
     let first = &comps[0];
     let kw = ident(first);
@@ -2435,6 +2481,8 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
                     Some("upper-alpha") | Some("upper-latin") => s.list_style = ListStyle::UpperAlpha,
                     Some("lower-roman") => s.list_style = ListStyle::LowerRoman,
                     Some("upper-roman") => s.list_style = ListStyle::UpperRoman,
+                    Some("disclosure-open") => s.list_style = ListStyle::DisclosureOpen,
+                    Some("disclosure-closed") => s.list_style = ListStyle::DisclosureClosed,
                     Some("inside") => s.list_inside = true,
                     Some("outside") => s.list_inside = false,
                     _ => {}

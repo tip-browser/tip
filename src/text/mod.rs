@@ -76,7 +76,16 @@ fn candidates(key: FontKey) -> Vec<(String, u32)> {
         out.push((format!("{dir}/{base}-{style}.ttf"), 0));
         out.push((format!("{dir}/{base}-regular.ttf"), 0));
     }
-    // macOS
+    // macOS: Menlo for monospace (what ui-monospace/monospace look like there)
+    if key.family == FontFamily::Mono {
+        let idx = match (key.bold, key.italic) {
+            (false, false) => 0,
+            (true, false) => 1,
+            (false, true) => 2,
+            (true, true) => 3,
+        };
+        out.push(("/System/Library/Fonts/Menlo.ttc".into(), idx));
+    }
     let mac_names: &[&str] = match key.family {
         FontFamily::Sans => &["Arial", "Verdana"],
         FontFamily::Serif => &["Times New Roman", "Georgia"],

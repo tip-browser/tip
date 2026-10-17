@@ -348,6 +348,50 @@ impl Canvas {
         )
     }
 
+    /// Pixel bounds (x0, y0, x1, y1) of a rect within the canvas and current clip.
+    pub fn region(&self, r: Rect) -> (usize, usize, usize, usize) {
+        let r = r.intersect(&self.clip);
+        if r.is_empty() {
+            return (0, 0, 0, 0);
+        }
+        let x0 = r.x.floor().max(0.0) as usize;
+        let y0 = r.y.floor().max(0.0) as usize;
+        let x1 = (r.right().ceil().max(0.0) as usize).min(self.w);
+        let y1 = (r.bottom().ceil().max(0.0) as usize).min(self.h);
+        (x0, y0, x1.max(x0), y1.max(y0))
+    }
+
+    /// Copy the pixels of a region (the backdrop of a group).
+    pub fn save_region(&self, (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<u32> {
+        let mut out = Vec::with_capacity((x1 - x0) * (y1 - y0));
+        for y in y0..y1 {
+            out.extend_from_slice(&self.px[y * self.w + x0..y * self.w + x1]);
+        }
+        out
+    }
+
+    /// Composite a group drawn over `saved` (its backdrop) with group opacity `op`:
+    /// result = backdrop + op × (drawn − backdrop).
+    pub fn blend_region(&mut self, saved: &[u32], (x0, y0, x1, y1): (usize, usize, usize, usize), op: f32) {
+        let a = (op.clamp(0.0, 1.0) * 256.0) as u32;
+        let w = x1 - x0;
+        for y in y0..y1 {
+            let row = &mut self.px[y * self.w + x0..y * self.w + x1];
+            let back = &saved[(y - y0) * w..(y - y0 + 1) * w];
+            for (d, &b) in row.iter_mut().zip(back) {
+                if *d == b {
+                    continue;
+                }
+                let mix = |sh: u32| {
+                    let dv = (*d >> sh) & 0xff;
+                    let bv = (b >> sh) & 0xff;
+                    ((bv * (256 - a) + dv * a) >> 8) << sh
+                };
+                *d = mix(16) | mix(8) | mix(0);
+            }
+        }
+    }
+
     /// Axis-aligned rect with fractional-edge anti-aliasing.
     pub fn fill_rect(&mut self, r: Rect, c: Color) {
         if c.a == 0 || r.is_empty() {

@@ -125,7 +125,7 @@ pub(crate) fn layout_box(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &
     // ---- parent/first-child top margin collapsing
     let bfc = a.bfc || establishes_bfc(b);
     if !bfc && b.inner == Inner::Flow && b.padding.top == 0.0 && b.border.top == 0.0 && !has_inline_content(b) {
-        if let Some(first) = b.children.iter_mut().find(|c| !c.is_out_of_flow() && !c.is_float()) {
+        if let Some(first) = b.children.iter_mut().find(|c| !c.is_out_of_flow() && !c.is_float() && !phantom_block(c)) {
             if !first.inline_level && first.inner == Inner::Flow && !establishes_bfc(first) {
                 let fm = first.style.margin[0].or_zero(content_w);
                 if fm > 0.0 && margin.top >= 0.0 {
@@ -158,6 +158,30 @@ pub(crate) fn layout_box(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &
     } else {
         None
     };
+
+    // ---- fieldset: the first <legend> sits on the top border
+    b.legend_gap = None;
+    let mut legend: Option<(usize, LayoutBox)> = None;
+    if matches!(b.inner, Inner::Flow | Inner::Grid | Inner::Flex) && b.node.is_some_and(|n| st.doc.tag_is(n, "fieldset")) {
+        if let Some(i) = b.children.iter().position(|c| !c.is_float() && !c.is_out_of_flow() && c.node.is_some_and(|n| st.doc.tag_is(n, "legend"))) {
+            let mut lg = b.children.remove(i);
+            let border_top_y = b.content.y - b.padding.top - b.border.top;
+            let la = Avail { cb_w: content_w, cb_h: None, mode: WidthMode::Shrink, forced_h: None, bfc: true };
+            layout_box(&mut lg, st, b.content.x, border_top_y, &la);
+            let lh = lg.margin_box().h;
+            let bt = b.border.top;
+            if lh < bt {
+                lg.translate(0.0, (bt - lh) / 2.0);
+            }
+            let extra = (lh - bt).max(0.0);
+            b.padding.top += extra;
+            b.content.y += extra;
+            let lb = lg.border_box();
+            let bx = b.content.x - b.padding.left - b.border.left;
+            b.legend_gap = Some((lb.x - bx, lb.right() - bx, ((lh - bt) / 2.0).max(0.0)));
+            legend = Some((i, lg));
+        }
+    }
 
     // ---- content
     if bfc {
@@ -206,6 +230,10 @@ pub(crate) fn layout_box(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &
         }
     }
     b.content.h = h.max(0.0);
+    if let Some((i, lg)) = legend {
+        let i = i.min(b.children.len());
+        b.children.insert(i, lg);
+    }
 
     // ---- scroll containers
     if b.is_scroll_container() {
@@ -267,8 +295,15 @@ fn extent_of(b: &LayoutBox) -> (f32, f32) {
     if b.is_out_of_flow() {
         return (f32::MIN, f32::MIN);
     }
-    let mb = b.margin_box();
-    let mut e = (mb.right(), mb.bottom());
+    // text and inline boxes are positioned through their line boxes, not their own rects
+    let mut e = match b.inner {
+        Inner::Text(_) | Inner::Break => return (f32::MIN, f32::MIN),
+        Inner::InlineFlow => (f32::MIN, f32::MIN),
+        _ => {
+            let mb = b.margin_box();
+            (mb.right(), mb.bottom())
+        }
+    };
     if !b.is_scroll_container() {
         for c in &b.children {
             let ce = extent_of(c);
@@ -312,6 +347,28 @@ pub(crate) fn has_inline_content(b: &LayoutBox) -> bool {
 }
 
 /// Normal flow of block-level children. Returns content height.
+/// Adjoining margins collapse: the largest positive plus the most negative.
+fn collapse_margins(a: f32, b: f32) -> f32 {
+    a.max(b).max(0.0) + a.min(b).min(0.0)
+}
+
+/// An anonymous block holding only empty inline boxes and collapsible whitespace:
+/// it produces a zero-height phantom line and doesn't separate margins.
+pub(crate) fn phantom_block(b: &LayoutBox) -> bool {
+    fn inline_empty(c: &LayoutBox) -> bool {
+        match &c.inner {
+            Inner::Text(t) => t.chars().all(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r')) && c.style.white_space.collapses(),
+            Inner::InlineFlow => {
+                let s = &c.style;
+                let zero = |l: &crate::style::Len| l.resolve(0.0).unwrap_or(0.0) == 0.0;
+                zero(&s.padding[1]) && zero(&s.padding[3]) && zero(&s.margin[1]) && zero(&s.margin[3]) && s.effective_border(1) == 0.0 && s.effective_border(3) == 0.0 && c.children.iter().all(inline_empty)
+            }
+            _ => c.is_out_of_flow(),
+        }
+    }
+    b.node.is_none() && b.inner == Inner::Flow && !b.children.is_empty() && b.children.iter().all(|c| c.inline_level || c.is_out_of_flow()) && b.children.iter().all(inline_empty)
+}
+
 fn layout_flow_children(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>, bfc: bool) -> f32 {
     let cx = b.content.x;
     let cw = b.content.w;
@@ -362,7 +419,20 @@ fn layout_flow_children(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>, b
             }
         }
         layout_box(child, st, x, border_top_y - mt, &avail);
-        cursor = child.border_box().bottom();
+        // An empty box (no height, padding or border) lets margins collapse through it.
+        let bb = child.border_box();
+        if bb.h < 0.01 && child.padding.top == 0.0 && child.padding.bottom == 0.0 && child.border.top == 0.0 && child.border.bottom == 0.0 && !establishes_bfc(child) && !child.style.clear {
+            let through = collapse_margins(gap, child.margin.bottom);
+            if have_prev {
+                // the gap already includes prev_mb; the cursor stays where the previous box ended
+                prev_mb = through;
+            } else {
+                prev_mb = through;
+                have_prev = true;
+            }
+            continue;
+        }
+        cursor = bb.bottom();
         prev_mb = child.margin.bottom;
         have_prev = true;
     }

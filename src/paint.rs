@@ -23,6 +23,9 @@ pub enum Item {
     Gradient { rect: Rect, bg: Background, radii: [f32; 4], opacity: f32 },
     Shadow { rect: Rect, radii: [f32; 4], color: Color, blur: f32 },
     Path { segs: Vec<Seg>, color: Color },
+    /// Start a group composited with `opacity` (CSS opacity); `bounds` limits the work.
+    PushLayer { bounds: Rect, opacity: f32 },
+    PopLayer,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,6 +90,11 @@ struct Builder<'a> {
 }
 
 fn radii_of(s: &ComputedStyle, r: Rect) -> [f32; 4] {
+    use crate::style::Display;
+    // border-radius doesn't apply to tables in the collapsing border model
+    if s.border_collapse && matches!(s.display, Display::Table | Display::InlineTable | Display::TableRowGroup | Display::TableRow | Display::TableCell) {
+        return [0.0; 4];
+    }
     let base = r.w.min(r.h);
     [
         s.border_radius[0].or_zero(base),
@@ -517,11 +525,30 @@ impl Builder<'_> {
             return;
         }
         if s.visible {
-            if !matches!(b.inner, Inner::TableRow | Inner::TableRowGroup) || s.background_color.a > 0 {
-                self.background(b, bb);
-            }
             let bw = [b.border.top, b.border.right, b.border.bottom, b.border.left];
-            self.borders(s, bb, bw, true, true);
+            if let Some((x0, x1, off)) = b.legend_gap {
+                // fieldset: border drawn through the legend's middle, interrupted behind it
+                let r = Rect::new(bb.x, bb.y + off, bb.w, (bb.h - off).max(0.0));
+                self.background(b, r);
+                let (gx0, gx1) = (bb.x + x0, bb.x + x1);
+                let pad = 2.0;
+                for clip in [
+                    Rect::new(bb.x - pad, r.y - pad, gx0 - bb.x + pad, r.h + 2.0 * pad),
+                    Rect::new(gx1, r.y - pad, bb.right() - gx1 + pad, r.h + 2.0 * pad),
+                    Rect::new(gx0, r.y + bw[0], gx1 - gx0, r.h),
+                ] {
+                    if clip.w > 0.0 && clip.h > 0.0 {
+                        self.push_clip(clip);
+                        self.borders(s, r, bw, true, true);
+                        self.pop_clip();
+                    }
+                }
+            } else {
+                if !matches!(b.inner, Inner::TableRow | Inner::TableRowGroup) || s.background_color.a > 0 {
+                    self.background(b, bb);
+                }
+                self.borders(s, bb, bw, true, true);
+            }
         }
         self.hit(bb, if b.is_pseudo { b.node } else { b.node }, s);
         if let Inner::Replaced(k) = &b.inner {
@@ -616,11 +643,19 @@ impl Builder<'_> {
     /// Paint a stacking context rooted at `b`.
     fn paint_context(&mut self, b: &LayoutBox) {
         let saved_op = self.opacity;
-        self.opacity *= b.style.opacity;
         let saved_fixed = self.fixed;
         if b.fixed {
             self.fixed = true;
             self.push(Item::SetFixed(true));
+        }
+        // opacity applies to the element and its descendants as one group
+        let layered = b.style.opacity < 1.0;
+        if layered {
+            let mut bounds = visual_bounds(b);
+            if let Some(c) = self.current_clip() {
+                bounds = bounds.intersect(&c);
+            }
+            self.push(Item::PushLayer { bounds, opacity: b.style.opacity.max(0.0) });
         }
         let mut layer: Vec<Deferred> = Vec::new();
         self.paint_box(b, &mut layer);
@@ -650,12 +685,43 @@ impl Builder<'_> {
                 self.push(Item::PopClip);
             }
         }
+        if layered {
+            self.push(Item::PopLayer);
+        }
         if b.fixed && !saved_fixed {
             self.push(Item::SetFixed(false));
         }
         self.fixed = saved_fixed;
         self.opacity = saved_op;
     }
+}
+
+/// Everything a box may paint: its border box, descendants, lines, shadows and outline.
+fn visual_bounds(b: &LayoutBox) -> Rect {
+    let s = &b.style;
+    let mut r = if matches!(b.inner, Inner::Text(_) | Inner::InlineFlow | Inner::Break) { Rect::default() } else { b.border_box() };
+    let mut grow = 0f32;
+    for sh in s.box_shadow.iter().filter(|sh| !sh.inset) {
+        grow = grow.max(sh.blur * 2.0 + sh.spread.max(0.0) + sh.x.abs().max(sh.y.abs()));
+    }
+    if s.outline_style != crate::style::BorderStyle::None {
+        grow = grow.max(s.outline_width + s.outline_offset.max(0.0));
+    }
+    if grow > 0.0 && !r.is_empty() {
+        r = r.inflate(grow + 1.0);
+    }
+    let union = |a: Rect, b: Rect| if a.is_empty() { b } else if b.is_empty() { a } else { a.union(&b) };
+    for l in &b.lines {
+        r = union(r, l.rect.inflate(2.0));
+    }
+    if !b.is_scroll_container() {
+        for c in &b.children {
+            if !c.fixed {
+                r = union(r, visual_bounds(c));
+            }
+        }
+    }
+    r
 }
 
 struct Deferred {
@@ -751,8 +817,19 @@ pub fn render(list: &DisplayList, canvas: &mut Canvas, vp: &Viewport) {
     };
     // cull items far outside the viewport
     let visible = Rect::new(vp.ox - 64.0, vp.oy - 64.0, vp.w + 128.0, vp.h + 128.0);
+    let mut layers: Vec<(Vec<u32>, (usize, usize, usize, usize), f32)> = Vec::new();
     for it in &list.items {
         match it {
+            Item::PushLayer { bounds, opacity } => {
+                let r = tf(*bounds, fixed).inflate(1.0);
+                let region = canvas.region(r);
+                layers.push((canvas.save_region(region), region, *opacity));
+            }
+            Item::PopLayer => {
+                if let Some((saved, region, op)) = layers.pop() {
+                    canvas.blend_region(&saved, region, op);
+                }
+            }
             Item::SetFixed(f) => fixed = *f,
             Item::PushClip(r) => {
                 canvas.push_clip(tf(*r, fixed));
