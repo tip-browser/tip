@@ -469,6 +469,10 @@ pub(crate) fn replaced_size(b: &LayoutBox, st: &State, cb_w: f32, cb_h: Option<f
             let tag = st.doc.tag(node).unwrap_or("");
             match tag {
                 "progress" | "meter" => (160.0, 16.0, false),
+                "svg" => {
+                    let (w, h) = crate::svg::intrinsic_size(st.doc, node, s.font_size);
+                    (w, h, true)
+                }
                 _ => (300.0, 150.0, true),
             }
         }

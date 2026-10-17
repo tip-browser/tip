@@ -848,6 +848,9 @@ impl layout::LayoutEnv for Env<'_> {
 }
 
 impl paint::PaintEnv for Env<'_> {
+    fn document(&self) -> Option<&Document> {
+        Some(&self.host.doc)
+    }
     fn node_image(&self, node: NodeId) -> Option<Rc<Image>> {
         self.image(node)
     }

@@ -439,6 +439,8 @@ pub struct ComputedStyle {
     pub aspect_ratio: Option<f32>,
     pub object_fit: BgSize,
     pub custom: Rc<HashMap<String, Vec<Tok>>>,
+    /// SVG paint properties (inherited).
+    pub svg: crate::svg::SvgCss,
 }
 
 impl Default for ComputedStyle {
@@ -527,6 +529,7 @@ impl Default for ComputedStyle {
             aspect_ratio: None,
             object_fit: BgSize::Auto,
             custom: Rc::new(HashMap::new()),
+            svg: Default::default(),
         }
     }
 }
@@ -560,6 +563,7 @@ impl ComputedStyle {
             border_collapse: parent.border_collapse,
             border_spacing: parent.border_spacing,
             custom: parent.custom.clone(),
+            svg: parent.svg.clone(),
             ..ComputedStyle::default()
         }
     }
@@ -1905,6 +1909,9 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
     let kw = kw.unwrap_or_default();
     let cur = s.color;
     match name {
+        "fill" => s.svg.fill = Some(crate::css::tokens_to_string(value).trim().to_string()),
+        "stroke" => s.svg.stroke = Some(crate::css::tokens_to_string(value).trim().to_string()),
+        "stroke-width" => s.svg.stroke_width = Some(crate::css::tokens_to_string(value).trim().to_string()),
         "display" => {
             let d = match kw.as_str() {
                 "none" => Display::None,

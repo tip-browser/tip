@@ -4,6 +4,7 @@ pub mod css;
 pub mod dom;
 pub mod html;
 pub mod style;
+pub mod svg;
 pub mod raster;
 pub mod text;
 pub mod image;

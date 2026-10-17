@@ -69,6 +69,9 @@ pub trait PaintEnv {
     fn node_image(&self, node: NodeId) -> Option<Rc<Image>>;
     fn url_image(&self, url: &str) -> Option<Rc<Image>>;
     fn control(&self, node: NodeId) -> ControlState;
+    fn document(&self) -> Option<&crate::dom::Document> {
+        None
+    }
 }
 
 pub fn key_of(s: &ComputedStyle) -> FontKey {
@@ -484,10 +487,18 @@ impl Builder<'_> {
                 }
             }
             Replaced::Placeholder => {
-                let tag = b.node.and_then(|_| None::<&str>);
-                let _ = tag;
-                if s.background_color.a == 0 && matches!(s.display, crate::style::Display::InlineBlock | crate::style::Display::Block) {
-                    // leave transparent
+                let Some(doc) = self.env.document() else { return };
+                if doc.tag(node).is_some_and(|t| t.eq_ignore_ascii_case("svg")) {
+                    let shapes = crate::svg::render(doc, node, c, s.color, s.font_size, &s.svg);
+                    if shapes.is_empty() {
+                        return;
+                    }
+                    self.push_clip(c);
+                    for sh in shapes {
+                        let color = self.col(sh.color);
+                        self.push(Item::Path { segs: sh.segs, color });
+                    }
+                    self.pop_clip();
                 }
             }
         }
