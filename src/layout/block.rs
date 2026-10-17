@@ -55,8 +55,77 @@ fn establishes_bfc(b: &LayoutBox) -> bool {
 }
 
 /// Layout a box with its margin-box top-left at (x, y).
+/// Inputs that determine the layout of an independent formatting context.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LayoutKey {
+    cb_w: u32,
+    cb_h: Option<u32>,
+    mode: WidthMode,
+    forced_h: Option<u32>,
+    collapsed_top: bool,
+    /// Border-box origin relative to the requested (x, y) after the last layout.
+    dx: f32,
+    dy: f32,
+}
+
+/// Lay out `b` at (x, y). Boxes laid out as independent formatting contexts (flex/grid items,
+/// table cells, ...) are often laid out several times with the same constraints while their
+/// parent measures them; those repeats reuse the previous result and are just moved.
 pub(crate) fn layout_box(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &Avail) {
-    b.intrinsic.set(None);
+    let key = LayoutKey {
+        cb_w: a.cb_w.to_bits(),
+        cb_h: a.cb_h.map(f32::to_bits),
+        mode: a.mode,
+        forced_h: a.forced_h.map(f32::to_bits),
+        collapsed_top: b.collapsed_top,
+        dx: 0.0,
+        dy: 0.0,
+    };
+    // move a previously laid-out box so its border box sits where a fresh layout would put it
+    let place = |b: &mut LayoutBox, prev: &LayoutKey| {
+        let bb = b.border_box();
+        b.translate(x + prev.dx - bb.x, y + prev.dy - bb.y);
+    };
+    if a.bfc && !b.is_out_of_flow() {
+        if let Some(prev) = b.layout_key {
+            let same = LayoutKey { dx: prev.dx, dy: prev.dy, ..key } == prev;
+            if same {
+                place(b, &prev);
+                return;
+            }
+            // only the imposed height changed (e.g. align-items: stretch) on a block whose
+            // content doesn't depend on its height: resize without laying out again
+            let only_height = LayoutKey { dx: prev.dx, dy: prev.dy, forced_h: prev.forced_h, ..key } == prev;
+            if let (true, Some(fh)) = (only_height, a.forced_h) {
+                if b.inner == Inner::Flow && !b.is_scroll_container() && !height_dependent(b) && !b.node.is_some_and(|n| st.doc.tag_is(n, "button")) {
+                    place(b, &prev);
+                    b.content.h = (fh - b.padding.v() - b.border.v()).max(0.0);
+                    b.layout_key = Some(LayoutKey { dx: prev.dx, dy: prev.dy, ..key });
+                    return;
+                }
+            }
+        }
+    }
+    layout_box_uncached(b, st, x, y, a);
+    b.layout_key = if a.bfc {
+        let bb = b.border_box();
+        Some(LayoutKey { dx: bb.x - x, dy: bb.y - y, ..key })
+    } else {
+        None
+    };
+}
+
+/// Whether a block's in-flow children size themselves against its height.
+fn height_dependent(b: &LayoutBox) -> bool {
+    let pct = |l: &crate::style::Len| matches!(l, crate::style::Len::Val(_, p) if *p != 0.0);
+    b.style.min_height.resolve(0.0).is_some() && pct(&b.style.min_height)
+        || b.children.iter().any(|c| {
+            let s = &c.style;
+            !c.is_out_of_flow() && (pct(&s.height) || pct(&s.min_height) || pct(&s.max_height) || c.style.aspect_ratio.is_some() && s.width.is_auto())
+        })
+}
+
+fn layout_box_uncached(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &Avail) {
     let style = b.style.clone();
     let cb_w = a.cb_w.max(0.0);
     b.padding = resolve_edges(&style.padding, cb_w);

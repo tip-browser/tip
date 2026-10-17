@@ -61,3 +61,16 @@ describe('replaced and table sizing', () => {
     expect(page.box('#b').height).toBe(30);
   });
 });
+
+describe('layout performance', () => {
+  test('deeply nested flexboxes lay out in linear time', () => {
+    let html = '<span id=leaf>leaf</span>';
+    for (let i = 0; i < 24; i++) {
+      html = `<div style="display:flex;flex-direction:column"><div style="display:flex"><div style="flex:1">${html}</div><div>x</div></div></div>`;
+    }
+    const t0 = Date.now();
+    page.setContent(html);
+    expect(page.box('#leaf').width > 0).toBe(true);
+    expect(Date.now() - t0 < 2000).toBe(true);
+  });
+});

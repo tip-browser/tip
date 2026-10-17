@@ -25,6 +25,8 @@ struct FItem {
     align: Align,
     frozen: bool,
     baseline: f32,
+    /// Column items measured by a full layout: (border-box height, width mode used).
+    measured: Option<(f32, WidthMode)>,
 }
 
 fn resolve_main_prop(l: Len, base: Option<f32>) -> Option<f32> {
@@ -73,6 +75,7 @@ pub(crate) fn layout_flex(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
             l => resolve_main_prop(l, main_size).map(to_border_box),
         };
         let is_replaced = matches!(c.inner, super::Inner::Replaced(_));
+        let mut measured = None;
         if base.is_none() {
             base = Some(if row {
                 if is_replaced {
@@ -86,6 +89,7 @@ pub(crate) fn layout_flex(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
                 let mode = if stretch { WidthMode::Exact((cw - mar.h()).max(0.0)) } else { WidthMode::Shrink };
                 let a = Avail { cb_w: cw, cb_h: def_h, mode, forced_h: None, bfc: true };
                 block::layout_box(c, st, 0.0, 0.0, &a);
+                measured = Some((c.border_box().h, mode));
                 c.border_box().h
             });
         }
@@ -131,6 +135,7 @@ pub(crate) fn layout_flex(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
             align: item_align(&cs.align_self, s.align_items),
             frozen: false,
             baseline: 0.0,
+            measured,
         });
     }
 
@@ -239,7 +244,14 @@ pub(crate) fn layout_flex(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
             Avail { cb_w: cw, cb_h: def_h, mode: WidthMode::Exact(it.main), forced_h: None, bfc: true }
         } else {
             let mode = if stretch_w { WidthMode::Exact((cw - it.c_start - it.c_end).max(0.0)) } else { WidthMode::Shrink };
-            Avail { cb_w: cw, cb_h: def_h, mode, forced_h: if main_size.is_some() || it.main != it.hyp || true { Some(it.main) } else { None }, bfc: true }
+            // an indefinite column whose item kept its measured height: that layout stands
+            if main_size.is_none() && it.measured.is_some_and(|(h, m)| m == mode && (h - it.main).abs() < 0.01) {
+                let bb = c.border_box();
+                it.cross = bb.w;
+                it.baseline = c.first_baseline().map(|v| v - bb.y).unwrap_or(bb.h);
+                continue;
+            }
+            Avail { cb_w: cw, cb_h: def_h, mode, forced_h: Some(it.main), bfc: true }
         };
         block::layout_box(c, st, 0.0, 0.0, &a);
         let bb = c.border_box();
