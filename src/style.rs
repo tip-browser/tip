@@ -911,6 +911,36 @@ fn presentational_hints(doc: &Document, node: NodeId) -> Vec<(&'static str, Stri
             }
         }
     }
+    // <table cellpadding> pads every cell
+    if matches!(doc.tag(node), Some("td" | "th")) {
+        let mut cur = doc.parent(node);
+        while let Some(n) = cur {
+            if doc.tag_is(n, "table") {
+                if let Some(cp) = doc.attr(n, "cellpadding") {
+                    out.push(("padding", px(cp)));
+                }
+                break;
+            }
+            cur = doc.parent(n);
+        }
+    }
+    // valign on cells, or inherited by cells from their row / row group
+    if matches!(doc.tag(node), Some("td" | "th" | "tr" | "tbody" | "thead" | "tfoot")) {
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            if let Some(v) = doc.attr(n, "valign") {
+                let v = v.trim().to_ascii_lowercase();
+                if matches!(v.as_str(), "top" | "middle" | "bottom" | "baseline") {
+                    out.push(("vertical-align", v));
+                }
+                break;
+            }
+            if !matches!(doc.tag(n), Some("td" | "th" | "tr" | "tbody" | "thead" | "tfoot")) {
+                break;
+            }
+            cur = doc.parent(n);
+        }
+    }
     if let Some(c) = doc.attr(node, "bgcolor") {
         out.push(("background-color", c.to_string()));
     }

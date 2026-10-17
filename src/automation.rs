@@ -23,7 +23,17 @@ pub fn screenshot(page: &mut Page, full_page: bool, scale: f32) -> Canvas {
         (vw, vh)
     };
     let _ = w;
-    let dl = page.host_mut().display_list();
+    // painting requests CSS background images; give them a moment to arrive
+    let mut dl = page.host_mut().display_list();
+    let deadline = Instant::now() + Duration::from_millis(3000);
+    if page.host().images_pending() {
+        while page.host().images_pending() && Instant::now() < deadline {
+            if !page.host_mut().poll_images() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        dl = page.host_mut().display_list();
+    }
     let mut canvas = Canvas::new((vw * scale).round() as usize, (h * scale).round() as usize);
     let scroll = if full_page { (0.0, 0.0) } else { saved };
     crate::paint::render(&dl, &mut canvas, &crate::paint::Viewport { ox: 0.0, oy: 0.0, w: vw * scale, h: h * scale, scale, scroll });

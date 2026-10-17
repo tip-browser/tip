@@ -37,3 +37,27 @@ describe('block layout', () => {
     expect(Math.round(page.box('#b').x - (a.x + a.width))).toBe(10);
   });
 });
+
+describe('replaced and table sizing', () => {
+  test('an svg with only a viewBox fills the available width', () => {
+    page.setContent('<a style="display:inline-block;box-sizing:border-box;width:40px;height:40px;padding:8px"><svg id=s viewBox="0 0 24 24"><path d="M0 0h24v24z"/></svg></a>');
+    expect(page.box('#s').width).toBe(24);
+    expect(page.box('#s').height).toBe(24);
+  });
+
+  test('percentage columns widen an auto-width table', () => {
+    page.setContent('<body style="margin:0;width:1280px"><table id=t cellpadding=0 cellspacing=0 style="margin:auto"><tr><td width="25%">&nbsp;</td><td id=m><div style="width:514px;height:10px"></div></td><td width="25%">x</td></tr></table></body>');
+    expect(page.box('#t').width).toBe(1028);
+    expect(page.box('#m').x).toBe(383);
+  });
+
+  test('valign on a row aligns its cells', () => {
+    page.setContent('<table cellpadding=0 cellspacing=0><tr valign=top><td><div style="height:60px"></div></td><td><div id=a>top</div></td></tr></table>');
+    expect(page.box('#a').y).toBe(page.box('table').y);
+  });
+
+  test('buttons use border-box sizing', () => {
+    page.setContent('<input id=b type=submit value=Go style="height:30px">');
+    expect(page.box('#b').height).toBe(30);
+  });
+});

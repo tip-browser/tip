@@ -541,7 +541,15 @@ pub(crate) fn replaced_size(b: &LayoutBox, st: &State, cb_w: f32, cb_h: Option<f
                 "progress" | "meter" => (160.0, 16.0, false),
                 "svg" => {
                     let (w, h) = crate::svg::intrinsic_size(st.doc, node, s.font_size);
-                    (w, h, true)
+                    let sized = st.doc.attr(node, "width").is_some_and(|v| !v.trim().ends_with('%')) || st.doc.attr(node, "height").is_some_and(|v| !v.trim().ends_with('%'));
+                    let avail = cb_w - pb_h - b.margin.h();
+                    if !sized && avail > 0.0 {
+                        // no intrinsic size, only a ratio: fill the available width
+                        let ratio = if h > 0.0 { w / h } else { 2.0 };
+                        (avail, avail / ratio, true)
+                    } else {
+                        (w, h, true)
+                    }
                 }
                 _ => (300.0, 150.0, true),
             }

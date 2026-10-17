@@ -371,7 +371,7 @@ impl PageHost {
                     Some(s) => s,
                     None => {
                         let mut s = css::parse_stylesheet(&text);
-                        let base = self.url.clone();
+                        let base = self.resolve_url("").unwrap_or_else(|| self.url.clone());
                         self.resolve_sheet_urls(&mut s, &base);
                         self.inline_imports(&mut s, &base, 0);
                         let rc = Rc::new(s);
@@ -855,6 +855,14 @@ impl paint::PaintEnv for Env<'_> {
         self.image(node)
     }
     fn url_image(&self, url: &str) -> Option<Rc<Image>> {
+        // URLs from style attributes are still relative to the document
+        let resolved;
+        let url = if Url::parse(url).is_some_and(|u| !u.scheme.is_empty()) {
+            url
+        } else {
+            resolved = self.host.resolve_url(url).map(|u| u.to_string()).unwrap_or_else(|| url.to_string());
+            resolved.as_str()
+        };
         match self.host.images.get(url) {
             Some(ImageEntry::Loaded(i)) => Some(i.clone()),
             Some(_) => None,

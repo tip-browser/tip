@@ -64,6 +64,7 @@ input[type=hidden] { display: none; }
 input[type=range] { margin: 2px; padding: 0; border: none; background: transparent; cursor: default; vertical-align: middle; }
 input:focus, textarea:focus, select:focus { outline: 2px solid #0b57d0; outline-offset: -1px; }
 select { cursor: default; padding-right: 20px; }
+button, input[type=submit], input[type=button], input[type=reset], input[type=image], input[type=file], select, input[type=search], input[type=checkbox], input[type=radio] { box-sizing: border-box; }
 button, input[type=submit], input[type=button], input[type=reset] {
   padding: 3px 10px; border: 1px solid #8f8f9d; border-radius: 4px; background-color: #e9e9ed;
   color: black; cursor: default; text-align: center;
