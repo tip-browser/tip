@@ -2555,6 +2555,20 @@ impl Interp {
     fn eval_assign(&mut self, op: AssignOp, target: &Pattern, value: &Expr, env: &Env) -> R<Value> {
         match op {
             AssignOp::Assign => {
+                // `obj.prop = value` / `obj[key] = value`: the target's object and key are
+                // evaluated before the value (the value may depend on their side effects)
+                if let Pattern::Expr(e) = target {
+                    if let Expr::Member { obj, prop, .. } = &**e {
+                        let o = match **obj {
+                            Expr::Super => self.this_value(env)?,
+                            _ => self.eval(obj, env)?,
+                        };
+                        let key = self.member_key(prop, env, &o)?;
+                        let v = self.eval(value, env)?;
+                        self.set(&o, key, v.clone())?;
+                        return Ok(v);
+                    }
+                }
                 let v = self.eval(value, env)?;
                 if let Pattern::Ident(n) = target {
                     if is_anon_fn(value) {

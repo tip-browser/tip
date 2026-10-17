@@ -214,3 +214,12 @@ fn getters_setters_and_misc() {
     check!("const x = {a: 1}; const y = structuredClone(x); y.a = 2; x.a", "1");
     check!("let i = 0; while (true) { if (++i > 100000) break } i", "100001");
 }
+
+#[test]
+fn assignment_target_evaluates_before_value() {
+    // Google's search page installs a method while evaluating the target object, then calls it
+    // on the right-hand side: `(install(k), proto).x = k.m()`
+    check!("var h = {}; (h.m = function () { return 5 }, h).n = h.m(); h.n", "5");
+    check!("var log = []; function f(t, v) { log.push(t); return v } f('obj', {})[f('key', 'k')] = f('rhs', 1); log.join()", "obj,key,rhs");
+    check!("var o = { a: 1 }; o.a += (o.a = 10); o.a", "11");
+}
