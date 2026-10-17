@@ -267,6 +267,20 @@ pub struct Closure {
     /// Object whose prototype `super` refers to.
     pub home: RefCell<Option<Obj>>,
     pub class: Option<Rc<ClassInfo>>,
+    /// Compiled code (functions from compiled scripts); `None` runs the tree-walking interpreter.
+    pub compiled: Option<Rc<super::compile::CFunc>>,
+    /// Variables of enclosing functions this compiled function uses.
+    pub caps: Rc<[super::compile::Cell]>,
+}
+
+/// How an instance or static field gets its value.
+#[derive(Clone)]
+pub enum FieldInit {
+    None,
+    /// Interpreted: the initializer expression of class member `i`.
+    Member(usize),
+    /// Compiled: a function called with the instance as `this`.
+    Func(Value),
 }
 
 pub struct ClassInfo {
@@ -275,7 +289,7 @@ pub struct ClassInfo {
     pub derived: bool,
     pub parent: Option<Value>,
     /// Instance fields: (key, initializer); evaluated at construction.
-    pub fields: RefCell<Vec<(PropKey, Option<usize>)>>,
+    pub fields: RefCell<Vec<(PropKey, FieldInit)>>,
     pub proto: RefCell<Option<Obj>>,
 }
 
@@ -715,6 +729,77 @@ pub fn to_uint32(n: f64) -> u32 {
 /// UTF-16 length of a string.
 pub fn utf16_len(s: &str) -> usize {
     if s.is_ascii() { s.len() } else { s.encode_utf16().count() }
+}
+
+/// Facts about a string that cost O(n) to work out: whether it is ASCII, and otherwise its
+/// UTF-16 code units. Cached by string identity so `s.length` / `s.charCodeAt(i)` in a loop
+/// over a long string stay O(1) per call.
+pub struct StrInfo {
+    pub ascii: bool,
+    pub units: Option<Rc<[u16]>>,
+}
+
+thread_local! {
+    // a cache, not state: any thread (including coroutine threads) may keep its own
+    static STR_INFO: RefCell<HashMap<usize, (std::rc::Weak<str>, Rc<StrInfo>)>> = RefCell::new(HashMap::new());
+}
+
+pub fn str_info(s: &JsStr) -> Rc<StrInfo> {
+    let compute = || {
+        let ascii = s.is_ascii();
+        Rc::new(StrInfo { ascii, units: if ascii { None } else { Some(s.encode_utf16().collect()) } })
+    };
+    if s.len() < 64 {
+        return compute();
+    }
+    let key = Rc::as_ptr(s) as *const u8 as usize;
+    STR_INFO.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((w, info)) = c.get(&key) {
+            if w.upgrade().is_some_and(|live| Rc::ptr_eq(&live, s)) {
+                return info.clone();
+            }
+        }
+        if c.len() > 512 {
+            c.retain(|_, (w, _)| w.strong_count() > 0);
+            if c.len() > 512 {
+                c.clear();
+            }
+        }
+        let info = compute();
+        c.insert(key, (Rc::downgrade(s), info.clone()));
+        info
+    })
+}
+
+/// `s.length` in UTF-16 code units.
+pub fn js_len(s: &JsStr) -> usize {
+    if s.len() < 64 {
+        return utf16_len(s);
+    }
+    let i = str_info(s);
+    match &i.units {
+        Some(u) => u.len(),
+        None => s.len(),
+    }
+}
+
+/// The UTF-16 code unit at `i`.
+pub fn js_code_unit(s: &JsStr, i: usize) -> Option<u16> {
+    let info = str_info(s);
+    match &info.units {
+        None => s.as_bytes().get(i).map(|b| *b as u16),
+        Some(u) => u.get(i).copied(),
+    }
+}
+
+/// `s[i]` / `s.charAt(i)` as a string.
+pub fn js_char_at(s: &JsStr, i: usize) -> Option<JsStr> {
+    let info = str_info(s);
+    match &info.units {
+        None => s.get(i..i + 1).map(Rc::from),
+        Some(u) => u.get(i).map(|c| Rc::from(String::from_utf16_lossy(&[*c]).as_str())),
+    }
 }
 
 #[cfg(test)]

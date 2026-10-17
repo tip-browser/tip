@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod builtins;
+pub mod compile;
 pub mod coro;
 pub mod fxhash;
 pub mod interp;

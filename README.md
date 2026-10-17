@@ -57,7 +57,7 @@ CI (`.github/workflows/ci.yml`) builds and tests on Linux, macOS and Windows, an
 
 **Networking.** An HTTP/1.1 client with chunked encoding, gzip/deflate, redirects and cookies. HTTPS goes through the OS. Also `file:`, `data:` and `about:` URLs, and the internal `tip:` scheme.
 
-**JavaScript.** A tree-walking interpreter supporting:
+**JavaScript.** Scripts are compiled once into trees of Rust closures with variables resolved to frame slots, or to shared cells when closures capture them. Anything the compiler doesn't handle yet falls back to a tree-walking interpreter; set `TIP_INTERP=1` to force the interpreter and `TIP_DEBUG_COMPILE=1` to log fallbacks. Supported language features:
 - `let`/`const`, closures, destructuring, spread and rest
 - classes with private fields, getters/setters and `super`
 - template literals, optional chaining, `??`, BigInt
@@ -153,6 +153,8 @@ src/
   net/                      URL parsing, HTTP/1.1 client, OS TLS bridge, cookies
   js/                       lexer, parser, interpreter, builtins, regex, coroutines
   rust/                     in-page Rust: lexer, parser, closure compiler, std library, `web` bridge
+  js/compile.rs             closure compiler: scope analysis, slot/cell resolution, codegen
+  workers.rs                dedicated workers
   frames.rs                 <iframe> browsing contexts, WindowProxy, postMessage, MessagePort transfer
   bindings/                 DOM host objects, events, window APIs
   page.rs input.rs tab.rs   documents, input handling, navigation/history

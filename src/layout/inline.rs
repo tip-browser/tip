@@ -531,6 +531,20 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>
         };
 
         // ---- placement
+        // `position: relative` inline boxes shift everything inside them
+        let rel_of = |s: &ComputedStyle| -> (f32, f32) {
+            if s.position != crate::style::Position::Relative {
+                return (0.0, 0.0);
+            }
+            let ch = cb_h.unwrap_or(0.0);
+            let dx = s.inset[3].resolve(cw).or_else(|| s.inset[1].resolve(cw).map(|v| -v)).unwrap_or(0.0);
+            let dy = s.inset[0].resolve(ch).or_else(|| s.inset[2].resolve(ch).map(|v| -v)).unwrap_or(0.0);
+            (dx, dy)
+        };
+        let shift_of = |stack: &[(usize, f32, Rc<ComputedStyle>)]| stack.iter().fold((0.0f32, 0.0f32), |acc, (_, _, s)| {
+            let r = rel_of(s);
+            (acc.0 + r.0, acc.1 + r.1)
+        });
         let mut lb = LineBox { rect: Rect::new(l, y, r - l, line_h), baseline, texts: vec![], decos: vec![] };
         // continuing inline boxes from the previous line
         let mut deco_stack: Vec<(usize, f32, Rc<ComputedStyle>)> = Vec::new();
@@ -546,9 +560,10 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>
                 Item::Word { text, w, style, node, space, .. } => {
                     let (asc, desc, _) = text_metrics(style);
                     if !*space || !style.white_space.collapses() || style.underline || style.line_through {
+                        let (sx, sy) = shift_of(&deco_stack);
                         lb.texts.push(TextFrag {
-                            x,
-                            baseline: baseline - valign_shift(style),
+                            x: x + sx,
+                            baseline: baseline - valign_shift(style) + sy,
                             w: *w,
                             ascent: asc,
                             descent: desc,
@@ -571,7 +586,10 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>
                         VAlign::Bottom => y + line_h - h,
                         _ => baseline - base,
                     };
-                    ab.translate(x - mb.x, ty - mb.y);
+                    // its margin box already includes any relative shift; keep that shift
+                    let (sx, sy) = ab.shift;
+                    let (px, py) = shift_of(&deco_stack);
+                    ab.translate(x - mb.x + sx + px, ty - mb.y + sy + py);
                     x += w;
                 }
                 Item::Open { path, extra, ml } => {
@@ -584,7 +602,9 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>
                 Item::Close { extra, mr } => {
                     let right = x + extra - mr;
                     if let Some((di, sx, s)) = deco_stack.pop() {
-                        lb.decos[di].rect = deco_rect(&s, sx, right, baseline);
+                        let (px, py) = shift_of(&deco_stack);
+                        let (ox, oy) = rel_of(&s);
+                        lb.decos[di].rect = deco_rect(&s, sx, right, baseline).translate(px + ox, py + oy);
                         lb.decos[di].last = true;
                     }
                     open.pop();
@@ -599,7 +619,9 @@ pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>
         }
         // hidden items may include Opens/Closes? no: only spaces are hidden. Close remaining decos at line end.
         while let Some((di, sx, s)) = deco_stack.pop() {
-            lb.decos[di].rect = deco_rect(&s, sx, x, baseline);
+            let (px, py) = shift_of(&deco_stack);
+            let (ox, oy) = rel_of(&s);
+            lb.decos[di].rect = deco_rect(&s, sx, x, baseline).translate(px + ox, py + oy);
         }
         lines.push(lb);
         y += line_h;

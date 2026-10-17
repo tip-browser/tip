@@ -124,6 +124,9 @@ pub struct LayoutBox {
     /// `<fieldset>` with a rendered legend: the legend's x-range relative to the border box
     /// (where the top border is interrupted) and how far below the box top the border is drawn.
     pub legend_gap: Option<(f32, f32, f32)>,
+    /// Shift from `position: relative` and `translate` (kept when the box is moved later, e.g.
+    /// onto its line as an atomic inline).
+    pub shift: (f32, f32),
     /// Constraints of the last layout (see `block::layout_box`).
     pub(crate) layout_key: Option<block::LayoutKey>,
     pub(crate) intrinsic: Cell<Option<(f32, f32)>>,
@@ -151,6 +154,7 @@ impl LayoutBox {
             colspan: 1,
             collapsed_top: false,
             legend_gap: None,
+            shift: (0.0, 0.0),
             layout_key: None,
             intrinsic: Cell::new(None),
         }

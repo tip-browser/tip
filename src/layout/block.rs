@@ -368,6 +368,7 @@ fn layout_box_uncached(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &Av
     let bb = b.border_box();
     dx += style.translate.0.or_zero(bb.w);
     dy += style.translate.1.or_zero(bb.h);
+    b.shift = (dx, dy);
     if dx != 0.0 || dy != 0.0 {
         b.translate(dx, dy);
     }

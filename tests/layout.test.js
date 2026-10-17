@@ -160,3 +160,16 @@ describe('line breaking', () => {
     expect(page.box('#t').width).toBeLessThan(20);
   });
 });
+
+describe('relative positioning of inline-level boxes', () => {
+  test('images and inline boxes shift by top/left, including percentages', () => {
+    page.setContent(`<style>body{margin:0}.w{overflow:hidden;position:relative;width:100px;height:100px}.w img{position:relative;width:400%;height:400%}</style>
+      <div class=w><img id=a src="fixtures/images/pic.png" style="top:-100%;left:-200%"></div>
+      <div style="height:100px;width:100px"><span id=s style="position:relative;top:-50%;left:30%">x</span></div>`);
+    expect(page.box('#a').x).toBe(-200);
+    expect(page.box('#a').y).toBe(-100);
+    const s = page.box('#s');
+    expect(s.x).toBe(30);
+    expect(s.y).toBeLessThan(60);
+  });
+});

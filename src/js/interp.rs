@@ -173,6 +173,8 @@ pub struct Interp {
     pub ext: HashMap<&'static str, Rc<dyn Any>>,
     /// Last-chance resolution of unknown global names (named access to elements by id).
     pub named_lookup: Option<fn(&mut Interp, &str) -> Option<Value>>,
+    /// `this` in a derived constructor before `super()` (compiled code).
+    pub uninit: Obj,
 }
 
 macro_rules! throw {
@@ -182,6 +184,12 @@ macro_rules! throw {
     }};
 }
 pub(crate) use throw;
+
+/// Whether scripts are compiled (`TIP_INTERP=1` forces the tree-walking interpreter).
+pub fn use_compiler() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("TIP_INTERP").is_err())
+}
 
 pub fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).cloned().unwrap_or(Value::Undefined)
@@ -256,6 +264,7 @@ impl Interp {
             module_loader: None,
             ext: HashMap::new(),
             named_lookup: None,
+            uninit: Obj::new(ObjKind::Ordinary, None, "Uninitialized"),
             steps: 0,
             unhandled: vec![],
             coroutines: vec![],
@@ -278,7 +287,7 @@ impl Interp {
     pub fn abort_marker(&self) -> Value {
         Value::Obj(self.abort.clone())
     }
-    fn is_marker(&self, v: &Value) -> bool {
+    pub(crate) fn is_marker(&self, v: &Value) -> bool {
         match v {
             Value::Obj(o) => o.ptr_eq(&self.gen_return) || o.ptr_eq(&self.abort) || o.ptr_eq(&self.short_circuit),
             _ => false,
@@ -533,10 +542,10 @@ impl Interp {
             Value::Str(s) => {
                 if let Some(k) = key.as_str() {
                     if k == "length" {
-                        return Ok(Value::Num(utf16_len(s) as f64));
+                        return Ok(Value::Num(js_len(s) as f64));
                     }
                     if let Some(i) = key.array_index() {
-                        return Ok(string_index(s, i).map(|c| Value::Str(Rc::from(c.as_str()))).unwrap_or(Value::Undefined));
+                        return Ok(js_char_at(s, i).map(Value::Str).unwrap_or(Value::Undefined));
                     }
                 }
                 let proto = self.p.string.clone();
@@ -620,11 +629,11 @@ impl Interp {
                     }
                     ObjKind::Str(s) => {
                         if key.as_str() == Some("length") {
-                            return Ok(Value::Num(utf16_len(s) as f64));
+                            return Ok(Value::Num(js_len(s) as f64));
                         }
                         if let Some(i) = key.array_index() {
-                            if let Some(c) = string_index(s, i) {
-                                return Ok(Value::Str(Rc::from(c.as_str())));
+                            if let Some(c) = js_char_at(s, i) {
+                                return Ok(Value::Str(c));
                             }
                         }
                         None
@@ -711,7 +720,7 @@ impl Interp {
             }
             match &b.kind {
                 ObjKind::Array(items) => return key.array_index().is_some_and(|i| i < items.len()) || key.as_str() == Some("length"),
-                ObjKind::Str(s) => return key.array_index().is_some_and(|i| i < utf16_len(s)) || key.as_str() == Some("length"),
+                ObjKind::Str(s) => return key.array_index().is_some_and(|i| i < js_len(s)) || key.as_str() == Some("length"),
                 ObjKind::TypedArray(t) => return key.array_index().is_some_and(|i| i < t.len),
                 ObjKind::Host(h) => Some(h.clone()),
                 _ => None,
@@ -1041,7 +1050,7 @@ impl Interp {
         r
     }
 
-    fn object_for_new(&mut self, nt: &Value) -> R<Obj> {
+    pub(crate) fn object_for_new(&mut self, nt: &Value) -> R<Obj> {
         let proto = self.get(nt, &PropKey::from("prototype"))?;
         let proto = match proto {
             Value::Obj(p) => p,
@@ -1050,16 +1059,16 @@ impl Interp {
         Ok(Obj::new(ObjKind::Ordinary, Some(proto), "Object"))
     }
 
-    fn init_fields(&mut self, ci: &Rc<ClassInfo>, target: &Obj) -> R<()> {
+    pub(crate) fn init_fields(&mut self, ci: &Rc<ClassInfo>, target: &Obj) -> R<()> {
         let fields = ci.fields.borrow().clone();
         if fields.is_empty() {
             return Ok(());
         }
         let home = ci.proto.borrow().clone();
         let env = Scope::new_func(Some(ci.env.clone()), FuncScope { this: RefCell::new(Some(Value::Obj(target.clone()))), home, new_target: Value::Undefined, func: None });
-        for (key, idx) in fields {
-            let v = match idx {
-                Some(i) => match &ci.def.members[i] {
+        for (key, init) in fields {
+            let v = match init {
+                FieldInit::Member(i) => match &ci.def.members[i] {
                     ClassMember::Field { value: Some(e), .. } => {
                         let v = self.eval(e, &env)?;
                         self.maybe_name(&v, &key);
@@ -1067,7 +1076,12 @@ impl Interp {
                     }
                     _ => Value::Undefined,
                 },
-                None => Value::Undefined,
+                FieldInit::Func(f) => {
+                    let v = self.call(&f, Value::Obj(target.clone()), &[])?;
+                    self.maybe_name(&v, &key);
+                    v
+                }
+                FieldInit::None => Value::Undefined,
             };
             target.borrow_mut().props.insert(key, Prop::data(v));
         }
@@ -1075,6 +1089,9 @@ impl Interp {
     }
 
     fn run_constructor(&mut self, c: &Rc<Closure>, fo: &Obj, this: Option<Value>, args: &[Value], nt: Value) -> R<Value> {
+        if let Some(cf) = &c.compiled {
+            return self.construct_compiled(c, cf, fo, this, args, nt);
+        }
         let env = Scope::new_func(Some(c.env.clone()), FuncScope { this: RefCell::new(this), home: c.home.borrow().clone(), new_target: nt, func: Some(fo.clone()) });
         let r = self.run_body(c, &env, args)?;
         if let Value::Obj(_) = r {
@@ -1088,6 +1105,9 @@ impl Interp {
     }
 
     fn call_closure(&mut self, c: &Rc<Closure>, fo: &Obj, this: Value, args: &[Value], nt: Value) -> R<Value> {
+        if let Some(cf) = &c.compiled {
+            return self.call_compiled(c, cf, fo, this, args, nt);
+        }
         let def = c.def.clone();
         let env = if def.is_arrow {
             Scope::new(Some(c.env.clone()))
@@ -1176,11 +1196,26 @@ impl Interp {
                 }
             }
         });
+        Ok(self.new_generator(body))
+    }
+
+    /// A generator object running `body` on a coroutine.
+    pub(crate) fn new_generator(&mut self, body: Box<dyn FnOnce(&mut Interp) -> R<Value>>) -> Value {
         let co = Rc::new(Coroutine::new(body, false));
         self.coroutines.retain(|w| w.strong_count() > 0);
         self.coroutines.push(Rc::downgrade(&co));
         let g = Obj::new(ObjKind::Generator(co), Some(self.p.generator.clone()), "Generator");
-        Ok(Value::Obj(g))
+        Value::Obj(g)
+    }
+
+    /// The promise of an async function whose body runs on a coroutine.
+    pub(crate) fn new_async(&mut self, body: Box<dyn FnOnce(&mut Interp) -> R<Value>>) -> Value {
+        let (promise, resolve, reject) = super::builtins::promise::new_capability(self);
+        let co = Rc::new(Coroutine::new(body, true));
+        self.coroutines.retain(|w| w.strong_count() > 0);
+        self.coroutines.push(Rc::downgrade(&co));
+        drive_async(self, co, Resume::Next(Value::Undefined), resolve, reject);
+        promise
     }
 
     pub fn iter_result(&mut self, value: Value, done: bool) -> Value {
@@ -1207,13 +1242,8 @@ impl Interp {
     }
 
     fn start_async(&mut self, c: Rc<Closure>, env: Env, args: Vec<Value>) -> Value {
-        let (promise, resolve, reject) = super::builtins::promise::new_capability(self);
         let body: Box<dyn FnOnce(&mut Interp) -> R<Value>> = Box::new(move |it: &mut Interp| it.run_body(&c, &env, &args));
-        let co = Rc::new(Coroutine::new(body, true));
-        self.coroutines.retain(|w| w.strong_count() > 0);
-        self.coroutines.push(Rc::downgrade(&co));
-        drive_async(self, co, Resume::Next(Value::Undefined), resolve, reject);
-        promise
+        self.new_async(body)
     }
 
     pub fn await_value(&mut self, v: Value) -> R<Value> {
@@ -1300,8 +1330,24 @@ impl Interp {
                 self.global.borrow_mut().props.insert(k, Prop::data(Value::Undefined));
             }
         }
-        let _ = global;
         let env = self.global_env.clone();
+        if use_compiler() {
+            match super::compile::compile_script(&stmts) {
+                Ok(cf) => {
+                    self.completion = Value::Undefined;
+                    return match self.run_compiled_script(&cf, env, global)? {
+                        Flow::Return(v) => Ok(v),
+                        _ => Ok(self.take_completion()),
+                    };
+                }
+                Err(why) => {
+                    if std::env::var("TIP_DEBUG_COMPILE").is_ok() {
+                        eprintln!("[compile] {name}: interpreting ({})", why.0);
+                    }
+                }
+            }
+        }
+        let _ = global;
         self.hoist_global(&stmts)?;
         self.completion = Value::Undefined;
         for s in &stmts {
@@ -1382,7 +1428,7 @@ impl Interp {
         self.set(&g, PropKey::Str(name.clone()), value)
     }
 
-    fn this_value(&mut self, env: &Env) -> R<Value> {
+    pub(crate) fn this_value(&mut self, env: &Env) -> R<Value> {
         let mut cur = Some(env);
         while let Some(s) = cur {
             if let Some(f) = &s.func {
@@ -1971,7 +2017,13 @@ impl Interp {
     // ------------------------------------------------------------ function objects
 
     pub fn make_function(&mut self, def: Rc<FuncDef>, env: &Env, home: Option<Obj>) -> Value {
-        let c = Rc::new(Closure { def: def.clone(), env: env.clone(), home: RefCell::new(home), class: None });
+        let c = Rc::new(Closure { def: def.clone(), env: env.clone(), home: RefCell::new(home), class: None, compiled: None, caps: Rc::new([]) });
+        self.function_object(c)
+    }
+
+    /// The function object for a closure (with `name`, `length` and `prototype`).
+    pub(crate) fn function_object(&mut self, c: Rc<Closure>) -> Value {
+        let def = c.def.clone();
         let proto = if def.is_generator { self.p.function.clone() } else { self.p.function.clone() };
         let f = Obj::new(ObjKind::Function(Func::Closure(c)), Some(proto), "Function");
         {
@@ -1990,7 +2042,7 @@ impl Interp {
         Value::Obj(f)
     }
 
-    fn eval_class(&mut self, c: &Rc<ClassDef>, env: &Env) -> R<Value> {
+    pub(crate) fn eval_class(&mut self, c: &Rc<ClassDef>, env: &Env) -> R<Value> {
         let cenv = Scope::new(Some(env.clone()));
         let (parent, proto_parent) = match &c.superclass {
             Some(e) => {
@@ -2040,7 +2092,7 @@ impl Interp {
                 source: Rc::from("class { }"),
             }),
         };
-        let closure = Rc::new(Closure { def: ctor_def, env: cenv.clone(), home: RefCell::new(Some(proto.clone())), class: Some(ci.clone()) });
+        let closure = Rc::new(Closure { def: ctor_def, env: cenv.clone(), home: RefCell::new(Some(proto.clone())), class: Some(ci.clone()), compiled: None, caps: Rc::new([]) });
         let fproto = match &parent {
             Some(Value::Obj(p)) => p.clone(),
             _ => self.p.function.clone(),
@@ -2085,7 +2137,7 @@ impl Interp {
                         static_inits.push(idx);
                         let _ = k;
                     } else {
-                        ci.fields.borrow_mut().push((k, Some(idx)));
+                        ci.fields.borrow_mut().push((k, FieldInit::Member(idx)));
                     }
                 }
                 ClassMember::StaticBlock(_) => static_inits.push(idx),
@@ -2143,7 +2195,7 @@ impl Interp {
         Ok(out)
     }
 
-    fn short_circuit(&self) -> Value {
+    pub(crate) fn short_circuit(&self) -> Value {
         Value::Obj(self.short_circuit.clone())
     }
 
@@ -2363,7 +2415,7 @@ impl Interp {
         }
     }
 
-    fn func_scope_home(&self, env: &Env) -> Option<Obj> {
+    pub(crate) fn func_scope_home(&self, env: &Env) -> Option<Obj> {
         let mut cur = Some(env);
         while let Some(s) = cur {
             if let Some(f) = &s.func {
@@ -3024,7 +3076,7 @@ pub enum Iter {
     Generic(Value, Value),
 }
 
-fn is_anon_fn(e: &Expr) -> bool {
+pub(crate) fn is_anon_fn(e: &Expr) -> bool {
     match e {
         Expr::Function(f) => f.name.is_none(),
         Expr::Class(c) => c.name.is_none(),
@@ -3032,7 +3084,7 @@ fn is_anon_fn(e: &Expr) -> bool {
     }
 }
 
-fn callee_desc(e: &Expr) -> String {
+pub(crate) fn callee_desc(e: &Expr) -> String {
     match e {
         Expr::Ident(n) => n.to_string(),
         Expr::Member { obj, prop, .. } => {

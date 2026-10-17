@@ -117,7 +117,7 @@ pub fn setup(it: &mut Interp) {
         if i < 0.0 {
             return Ok(Value::str(""));
         }
-        Ok(Value::str(&crate::js::interp::string_index(&s, i as usize).unwrap_or_default()))
+        Ok(js_char_at(&s, i as usize).map(Value::Str).unwrap_or_else(|| Value::str("")))
     });
     it.define_method(&sp, "charCodeAt", 1, |it, this, args| {
         let s = this_str(it, &this)?;
@@ -125,32 +125,33 @@ pub fn setup(it: &mut Interp) {
         if i < 0.0 {
             return Ok(Value::Num(f64::NAN));
         }
-        let u = if s.is_ascii() { s.as_bytes().get(i as usize).map(|b| *b as u16) } else { s.encode_utf16().nth(i as usize) };
-        Ok(Value::Num(u.map(|v| v as f64).unwrap_or(f64::NAN)))
+        Ok(Value::Num(js_code_unit(&s, i as usize).map(|v| v as f64).unwrap_or(f64::NAN)))
     });
     it.define_method(&sp, "codePointAt", 1, |it, this, args| {
         let s = this_str(it, &this)?;
         let i = it.to_integer(&arg(args, 0))?;
-        let u = units(&s);
-        if i < 0.0 || i as usize >= u.len() {
+        let len = js_len(&s);
+        if i < 0.0 || i as usize >= len {
             return Ok(Value::Undefined);
         }
         let i = i as usize;
-        let hi = u[i];
-        if (0xD800..0xDC00).contains(&hi) && i + 1 < u.len() && (0xDC00..0xE000).contains(&u[i + 1]) {
-            return Ok(Value::Num((0x10000 + ((hi as u32 - 0xD800) << 10) + (u[i + 1] as u32 - 0xDC00)) as f64));
+        let hi = js_code_unit(&s, i).unwrap_or(0);
+        if (0xD800..0xDC00).contains(&hi) {
+            if let Some(lo) = js_code_unit(&s, i + 1).filter(|lo| (0xDC00..0xE000).contains(lo)) {
+                return Ok(Value::Num((0x10000 + ((hi as u32 - 0xD800) << 10) + (lo as u32 - 0xDC00)) as f64));
+            }
         }
         Ok(Value::Num(hi as f64))
     });
     it.define_method(&sp, "at", 1, |it, this, args| {
         let s = this_str(it, &this)?;
-        let u = units(&s);
+        let len = js_len(&s);
         let i = it.to_integer(&arg(args, 0))?;
-        let idx = if i < 0.0 { u.len() as f64 + i } else { i };
-        if idx < 0.0 || idx as usize >= u.len() {
+        let idx = if i < 0.0 { len as f64 + i } else { i };
+        if idx < 0.0 || idx as usize >= len {
             return Ok(Value::Undefined);
         }
-        Ok(Value::str(&from_units(&u[idx as usize..idx as usize + 1])))
+        Ok(js_char_at(&s, idx as usize).map(Value::Str).unwrap_or(Value::Undefined))
     });
     it.define_method(&sp, "indexOf", 1, |it, this, args| {
         let s = this_str(it, &this)?;

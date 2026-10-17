@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 pub type Name = Rc<str>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub line: u32,
@@ -17,25 +17,25 @@ pub enum DeclKind {
     Const,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ForInit {
     Decl(DeclKind, Vec<(Pattern, Option<Expr>)>),
     Expr(Expr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ForTarget {
     Decl(DeclKind, Pattern),
     Pattern(Pattern),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SwitchCase {
     pub test: Option<Expr>,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Expr(Expr),
     Decl(DeclKind, Vec<(Pattern, Option<Expr>)>),
@@ -59,7 +59,7 @@ pub enum StmtKind {
     Debugger,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub body: Vec<Stmt>,
     /// Whether this block declares let/const/class/function bindings and needs its own scope.
