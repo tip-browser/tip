@@ -99,3 +99,38 @@ describe('dialog sizing', () => {
     expect(b.x).toBe(a.x + a.width + 16);
   });
 });
+
+describe('intrinsic sizing', () => {
+  test('auto-fit columns with a min() minimum resolve against the grid width', () => {
+    page.setContent(`<style>body{margin:0;width:800px} ul{list-style:none;margin:0;padding:0;display:grid;gap:28px 32px;grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr))}</style>
+      <ul><li id=a>one</li><li id=b>two</li><li id=c>three</li><li id=d>four</li></ul>`);
+    expect(Math.round(page.box('#a').width)).toBe(245);
+    expect(Math.round(page.box('#b').x)).toBe(277);
+    expect(page.box('#d').x).toBe(0);
+    expect(page.box('#d').y).toBeGreaterThan(page.box('#a').y);
+  });
+
+  test('calc() tracks resolve at layout time', () => {
+    page.setContent(`<style>body{margin:0;width:400px} div{display:grid;grid-template-columns:calc(50% - 10px) 1fr}</style><div><i id=a>a</i><i id=b>b</i></div>`);
+    expect(page.box('#a').width).toBe(190);
+    expect(page.box('#b').x).toBe(190);
+  });
+
+  test('min-content allows breaks after hyphens', () => {
+    page.setContent(`<style>body{margin:0} span{display:inline-block;width:min-content}</style><span id=s>Low-profile</span><span id=w>Lowprofile</span>`);
+    expect(page.box('#s').width).toBeLessThan(page.box('#w').width);
+  });
+
+  test('width: fit-content / max-content / min-content inside grid and flex', () => {
+    page.setContent(`<style>body{margin:0;width:600px} .g{display:grid} .f{display:flex;flex-direction:column} p{margin:0}</style>
+      <div class=g><p id=a style="width:fit-content">tag</p><p id=b>stretch</p><p id=c style="width:max-content">a much longer line of text that is wide</p><p id=d style="width:min-content">two words</p></div>
+      <div class=f><p id=e style="width:fit-content">in flex column</p></div><div><p id=f style="width:fit-content">block</p></div>`);
+    expect(page.box('#a').width).toBeLessThan(60);
+    expect(page.box('#b').width).toBe(600);
+    expect(page.box('#c').width).toBeGreaterThan(200);
+    expect(page.box('#c').width).toBeLessThan(600);
+    expect(page.box('#d').width).toBeLessThan(page.box('#c').width / 3);
+    expect(page.box('#e').width).toBeLessThan(150);
+    expect(page.box('#f').width).toBeLessThan(80);
+  });
+});

@@ -327,6 +327,16 @@ pub enum Align {
     Baseline,
 }
 
+/// Intrinsic sizing keywords for `width`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum SizeKw {
+    #[default]
+    None,
+    FitContent,
+    MaxContent,
+    MinContent,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Track {
     Px(f32),
@@ -336,6 +346,9 @@ pub enum Track {
     MinContent,
     MaxContent,
     MinMax(Box<Track>, Box<Track>),
+    /// A length that depends on the grid's size, like `min(100%, 14rem)` or
+    /// `calc(50% - 8px)`; resolved during layout.
+    Len(Len),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -343,7 +356,7 @@ pub enum GridTemplate {
     None,
     Tracks(Vec<Track>),
     /// repeat(auto-fill|auto-fit, minmax(min, max))
-    AutoFill { min: f32, max: Track },
+    AutoFill { min: Len, max: Track },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -414,6 +427,8 @@ pub struct ComputedStyle {
     pub clear: bool,
     pub border_box: bool,
     pub width: Len,
+    /// `width: fit-content | max-content | min-content` (with `width` itself `auto`).
+    pub width_kw: SizeKw,
     pub height: Len,
     pub min_width: Len,
     pub min_height: Len,
@@ -505,6 +520,7 @@ impl Default for ComputedStyle {
             clear: false,
             border_box: false,
             width: Len::Auto,
+            width_kw: SizeKw::None,
             height: Len::Auto,
             min_width: Len::Auto,
             min_height: Len::Auto,
@@ -1594,7 +1610,11 @@ fn parse_track(c: &[Tok], cx: &Ctx) -> Option<Track> {
             let trim = |a: &Vec<Tok>| a.iter().filter(|t| **t != Tok::Ws).cloned().collect::<Vec<_>>();
             Some(Track::MinMax(Box::new(parse_track(&trim(&args[0]), cx)?), Box::new(parse_track(&trim(&args[1]), cx)?)))
         }
-        _ => length(c, cx).and_then(|l| l.resolve(0.0)).map(Track::Px),
+        _ => length(c, cx).map(|l| match l {
+            Len::Val(px, 0.0) => Track::Px(px),
+            Len::Val(0.0, pct) => Track::Pct(pct),
+            other => Track::Len(other),
+        }),
     }
 }
 
@@ -1627,13 +1647,17 @@ fn grid_template(toks: &[Tok], cx: &Ctx) -> Option<GridTemplate> {
                         let (min, max) = match t {
                             Track::MinMax(a, b) => (
                                 match *a {
-                                    Track::Px(p) => p,
-                                    _ => 100.0,
+                                    Track::Px(p) => Len::px(p),
+                                    Track::Pct(p) => Len::pct(p),
+                                    Track::Len(l) => l,
+                                    _ => Len::px(100.0),
                                 },
                                 *b,
                             ),
-                            Track::Px(p) => (p, Track::Px(p)),
-                            _ => (100.0, t),
+                            Track::Px(p) => (Len::px(p), Track::Px(p)),
+                            Track::Pct(p) => (Len::pct(p), Track::Pct(p)),
+                            Track::Len(l) => (l, Track::Len(l)),
+                            _ => (Len::px(100.0), t),
                         };
                         return Some(GridTemplate::AutoFill { min, max });
                     }
@@ -2104,8 +2128,18 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
         "clear" => s.clear = kw != "none",
         "box-sizing" => s.border_box = kw == "border-box",
         "width" | "inline-size" => {
-            if let Some(l) = length(first, cx).or(if kw == "fit-content" || kw == "max-content" || kw == "min-content" { Some(Len::Auto) } else { None }) {
-                s.width = l
+            let kwv = match kw.as_str() {
+                "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => Some(SizeKw::FitContent),
+                "max-content" => Some(SizeKw::MaxContent),
+                "min-content" => Some(SizeKw::MinContent),
+                _ => None,
+            };
+            if let Some(k) = kwv {
+                s.width = Len::Auto;
+                s.width_kw = k;
+            } else if let Some(l) = length(first, cx) {
+                s.width = l;
+                s.width_kw = SizeKw::None;
             }
         }
         "height" | "block-size" => {

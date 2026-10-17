@@ -159,12 +159,30 @@ fn text_intrinsic(t: &str, b: &LayoutBox) -> (f32, f32) {
         _ => {
             let mut mn: f32 = 0.0;
             for w in t.split_whitespace() {
-                mn = mn.max(text::measure(key, s.font_size, w, ls));
+                for part in hyphen_parts(w) {
+                    mn = mn.max(text::measure(key, s.font_size, part, ls));
+                }
             }
             let collapsed = crate::dom::collapse_ws(t);
             (mn, text::measure(key, s.font_size, &collapsed, ls))
         }
     }
+}
+
+/// A word split after its hyphens, where lines may break ("Low-|profile").
+fn hyphen_parts(w: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, c) in w.char_indices() {
+        if c == '-' && w[start..i].chars().count() >= 2 {
+            out.push(&w[start..i + 1]);
+            start = i + 1;
+        }
+    }
+    if start < w.len() {
+        out.push(&w[start..]);
+    }
+    out
 }
 
 /// Intrinsic widths of a run of inline-level content.
@@ -250,6 +268,12 @@ fn walk(children: &[LayoutBox], st: &State, acc: &mut InlineAcc) {
                                 }
                             } else {
                                 cur.push(ch);
+                                // a line may break after a hyphen in a word (as inline layout does)
+                                if ch == '-' && !nowrap && cur.chars().count() > 2 {
+                                    flush(&mut cur, acc);
+                                    acc.min = acc.min.max(acc.word);
+                                    acc.word = 0.0;
+                                }
                             }
                         }
                         flush(&mut cur, acc);

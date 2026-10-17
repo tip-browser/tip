@@ -138,7 +138,20 @@ fn layout_box_uncached(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &Av
     // ---- width
     let is_replaced = matches!(b.inner, Inner::Replaced(_));
     let mut replaced_h = None;
-    let content_w = if let WidthMode::Exact(bw) = a.mode {
+    let content_w = if style.width_kw != crate::style::SizeKw::None && !is_replaced && b.inner != Inner::Table {
+        // `width: fit-content | max-content | min-content` wins over stretching by a grid/flex parent
+        let (mn, mx) = intrinsic::intrinsic(b, st);
+        let (mn, mx) = ((mn - pb_h).max(0.0), (mx - pb_h).max(0.0));
+        let avail = match a.mode {
+            WidthMode::Exact(bw) => (bw - pb_h).max(0.0),
+            _ => (cb_w - margin.h() - pb_h).max(0.0),
+        };
+        match style.width_kw {
+            crate::style::SizeKw::MaxContent => mx,
+            crate::style::SizeKw::MinContent => mn,
+            _ => mn.max(avail.min(mx)),
+        }
+    } else if let WidthMode::Exact(bw) = a.mode {
         if is_replaced {
             let (w, h) = replaced_size(b, st, cb_w, a.cb_h);
             let cw = (bw - pb_h).max(0.0);

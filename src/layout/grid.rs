@@ -5,15 +5,32 @@ use super::block::{self, Avail, WidthMode};
 use super::{intrinsic, LayoutBox, State};
 use crate::style::{Align, GridTemplate, Track};
 
-fn expand(t: &GridTemplate, avail: f32, gap: f32) -> Vec<Track> {
+/// Resolve lengths that depend on the grid's size (`min(100%, 14rem)`) against `base`;
+/// with an indefinite base they behave as `auto`.
+fn resolve_track(t: &Track, base: Option<f32>) -> Track {
+    match t {
+        Track::Len(l) => match l.resolve_opt(base) {
+            Some(px) => Track::Px(px.max(0.0)),
+            None => Track::Auto,
+        },
+        Track::MinMax(a, b) => Track::MinMax(Box::new(resolve_track(a, base)), Box::new(resolve_track(b, base))),
+        other => other.clone(),
+    }
+}
+
+fn expand(t: &GridTemplate, avail: Option<f32>, gap: f32) -> Vec<Track> {
     match t {
         GridTemplate::None => vec![],
-        GridTemplate::Tracks(v) => v.clone(),
+        GridTemplate::Tracks(v) => v.iter().map(|t| resolve_track(t, avail)).collect(),
         GridTemplate::AutoFill { min, max } => {
-            let n = (((avail + gap) / (min + gap)).floor() as usize).max(1);
+            let min = min.resolve_opt(avail).unwrap_or(0.0).max(0.0);
+            let n = match avail {
+                Some(a) if min + gap > 0.0 => (((a + gap) / (min + gap)).floor() as usize).max(1),
+                _ => 1,
+            };
             let tr = match max {
-                Track::Fr(f) => Track::MinMax(Box::new(Track::Px(*min)), Box::new(Track::Fr(*f))),
-                other => other.clone(),
+                Track::Fr(f) => Track::MinMax(Box::new(Track::Px(min)), Box::new(Track::Fr(*f))),
+                other => resolve_track(other, avail),
             };
             vec![tr; n.min(200)]
         }
@@ -46,7 +63,8 @@ fn size_tracks(tracks: &[Track], avail: Option<f32>, gap: f32, content: &[(f32, 
                 base[i] = avail.map(|a| a * p / 100.0).unwrap_or(cmax);
                 limit[i] = base[i];
             }
-            Track::Auto => {
+            // `expand` resolves lengths; anything left over sizes like `auto`
+            Track::Auto | Track::Len(_) => {
                 base[i] = cmax;
                 growable[i] = true;
             }
@@ -221,12 +239,12 @@ pub(crate) fn layout_grid(b: &mut LayoutBox, st: &mut State, def_h: Option<f32>,
     let (cx, cy) = (b.content.x, b.content.y);
     let cgap = s.column_gap;
     let rgap = s.row_gap;
-    let mut cols = expand(&s.grid_columns, cw, cgap);
+    let mut cols = expand(&s.grid_columns, Some(cw), cgap);
     if cols.is_empty() {
         cols.push(Track::Fr(1.0));
     }
     let ncols = cols.len();
-    let row_tracks = expand(&s.grid_rows, def_h.unwrap_or(0.0), rgap);
+    let row_tracks = expand(&s.grid_rows, def_h, rgap);
 
     let items: Vec<usize> = (0..b.children.len()).filter(|&i| !b.children[i].is_out_of_flow()).collect();
     for c in b.children.iter_mut().filter(|c| c.is_out_of_flow()) {
