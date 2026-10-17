@@ -34,6 +34,9 @@ pub fn document_write(it: &mut Interp, html: &str) {
     let h = ph(it);
     let frag = h.doc.create_fragment();
     crate::html::parse_fragment_into(&mut h.doc, frag, html);
+    // scripts written by document.write run (they are parser-inserted)
+    let roots = super::scripts::roots_of(it, frag);
+    let h = ph(it);
     match h.current_script.and_then(|s| h.doc.parent(s).map(|p| (s, p))) {
         Some((s, p)) => {
             let next = h.doc.next_sibling(s);
@@ -45,6 +48,7 @@ pub fn document_write(it: &mut Interp, html: &str) {
             }
         }
     }
+    super::scripts::run_inserted(it, &roots);
 }
 
 pub fn get_selection(it: &mut Interp) -> R<Value> {
@@ -1279,9 +1283,14 @@ pub fn install(it: &mut Interp) {
     for name in ["window", "self", "top", "parent", "frames"] {
         g.set_hidden(name, gv.clone());
     }
-    for (k, v) in [("opener", Value::Null), ("frameElement", Value::Null), ("closed", Value::Bool(false)), ("name", s("")), ("status", s("")), ("isSecureContext", Value::Bool(true)), ("length", Value::Num(0.0))] {
+    for (k, v) in [("opener", Value::Null), ("frameElement", Value::Null), ("closed", Value::Bool(false)), ("name", s("")), ("status", s("")), ("isSecureContext", Value::Bool(true))] {
         g.set_hidden(k, v);
     }
+    // child frames: `window.length` and `window[i]` / `frames[i]`
+    it.define_getter(&g, "length", |it, _, _| {
+        let n = crate::frames::child_windows(it).len();
+        Ok(Value::Num(n as f64))
+    });
     let origin = ph(it).url.origin();
     g.set_hidden("origin", s(&origin));
 
@@ -1661,7 +1670,9 @@ pub fn install(it: &mut Interp) {
         sig.set_prop("aborted", Value::Bool(false));
         sig.set_prop("reason", Value::Undefined);
         sig.set_prop("onabort", Value::Null);
-        let et = it.global.get_own("EventTarget").and_then(|c| c.as_obj().and_then(|c| c.get_own("prototype")));
+        // AbortSignal.prototype (from the prelude), else EventTarget.prototype
+        let proto_of = |it: &mut Interp, name: &str| it.global.get_own(name).and_then(|c| c.as_obj().and_then(|c| c.get_own("prototype")));
+        let et = proto_of(it, "AbortSignal").or_else(|| proto_of(it, "EventTarget"));
         if let Some(Value::Obj(e)) = et {
             sig.borrow_mut().proto = Some(e);
         }
@@ -1673,8 +1684,23 @@ pub fn install(it: &mut Interp) {
     it.define_method(&acp, "abort", 1, |it, this, args| {
         let sig = it.get_str(&this, "signal")?;
         if let Value::Obj(so) = &sig {
+            if so.get_own("aborted").is_some_and(|a| a.truthy()) {
+                return Ok(Value::Undefined);
+            }
+            let reason = match arg(args, 0) {
+                Value::Undefined => {
+                    let g = Value::Obj(it.global.clone());
+                    let ctor = it.get_str(&g, "DOMException")?;
+                    if ctor.is_callable() {
+                        it.construct(&ctor, &[Value::str("signal is aborted without reason"), Value::str("AbortError")], None)?
+                    } else {
+                        it.make_error("Error", "signal is aborted without reason")
+                    }
+                }
+                r => r,
+            };
             so.set_prop("aborted", Value::Bool(true));
-            so.set_prop("reason", arg(args, 0));
+            so.set_prop("reason", reason);
             let t = events::target_of(it, &sig);
             ph(it).listener_objects.insert(so.id(), sig.clone());
             events::fire(it, t, "abort", "Event", EventInit::default());

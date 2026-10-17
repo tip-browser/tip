@@ -171,6 +171,8 @@ pub struct Interp {
     pub module_loader: Option<Rc<dyn super::module::ModuleLoader>>,
     /// Embedder data that must be reachable from any coroutine thread (not thread-local).
     pub ext: HashMap<&'static str, Rc<dyn Any>>,
+    /// Last-chance resolution of unknown global names (named access to elements by id).
+    pub named_lookup: Option<fn(&mut Interp, &str) -> Option<Value>>,
 }
 
 macro_rules! throw {
@@ -253,6 +255,7 @@ impl Interp {
             modules: HashMap::new(),
             module_loader: None,
             ext: HashMap::new(),
+            named_lookup: None,
             steps: 0,
             unhandled: vec![],
             coroutines: vec![],
@@ -1352,7 +1355,14 @@ impl Interp {
             "undefined" => Ok(Value::Undefined),
             "NaN" => Ok(Value::Num(f64::NAN)),
             "Infinity" => Ok(Value::Num(f64::INFINITY)),
-            _ => throw!(self, "ReferenceError", "{name} is not defined"),
+            _ => {
+                if let Some(f) = self.named_lookup {
+                    if let Some(v) = f(self, name) {
+                        return Ok(v);
+                    }
+                }
+                throw!(self, "ReferenceError", "{name} is not defined")
+            }
         }
     }
 

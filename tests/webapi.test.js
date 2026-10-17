@@ -67,3 +67,62 @@ describe('web APIs', () => {
     expect(r).toBe('true,true,1,NotFoundError,8,true,4');
   });
 });
+
+describe('AbortSignal', () => {
+  test('controller signals, abort(), any() and timeout()', () => {
+    page.setContent('<p>x</p>');
+    page.evaluate(`(() => {
+      const c = new AbortController();
+      let fired = 0;
+      c.signal.addEventListener('abort', () => fired++);
+      c.abort(); c.abort();
+      window.r1 = [c.signal instanceof AbortSignal, c.signal.aborted, c.signal.reason.name, fired, Object.prototype.toString.call(c.signal)].join();
+      const a = AbortSignal.abort('why');
+      let thrown; try { a.throwIfAborted(); } catch (e) { thrown = e; }
+      const c2 = new AbortController();
+      const any = AbortSignal.any([c2.signal, new AbortController().signal]);
+      c2.abort('first');
+      window.r2 = [a.aborted, thrown, any.aborted, any.reason].join();
+      window.t = AbortSignal.timeout(10);
+      try { new AbortSignal(); } catch (e) { window.r3 = e instanceof TypeError; }
+    })()`);
+    expect(page.evaluate('r1')).toBe('true,true,AbortError,1,[object AbortSignal]');
+    expect(page.evaluate('r2')).toBe('true,why,true,first');
+    expect(page.evaluate('r3')).toBe(true);
+    page.wait(60);
+    expect(page.evaluate('t.aborted + " " + t.reason.name')).toBe('true TimeoutError');
+  });
+});
+
+describe('CSSOM', () => {
+  test('document.styleSheets and cssRules', () => {
+    page.setContent('<style id=s>/* x */ p { color: red; margin: 0 !important } @media (min-width: 1px) { .a { top: 1px } }</style><p id=p>hi</p>');
+    const r = page.evaluate(`(() => {
+      const s = document.styleSheets[0];
+      const rules = s.cssRules;
+      return [document.styleSheets.length, s.ownerNode.id, rules.length, rules[0].selectorText, rules[0].style.getPropertyValue('color'), rules[0].style.getPropertyPriority('margin'), rules[1].type, rules[1].media.mediaText, rules[1].cssRules[0].selectorText, s === document.getElementById('s').sheet, s instanceof CSSStyleSheet].join('|');
+    })()`);
+    expect(r).toBe('1|s|2|p|red|important|4|(min-width: 1px)|.a|true|true');
+  });
+
+  test('insertRule and deleteRule restyle the page (CSS-in-JS)', () => {
+    page.setContent('<style id=s></style><div id=d class=css-1>styled</div>');
+    page.evaluate(`const s = document.getElementById('s').sheet; s.insertRule('.css-1 { width: 123px; color: rgb(1, 2, 3) }', 0); s.insertRule('.css-1 { height: 7px }', 1);`);
+    expect(page.box('#d').width).toBe(123);
+    expect(page.box('#d').height).toBe(7);
+    expect(page.evaluate('getComputedStyle(d).color')).toBe('rgb(1, 2, 3)');
+    page.evaluate(`document.getElementById('s').sheet.deleteRule(0)`);
+    expect(page.box('#d').width).not.toBe(123);
+    expect(page.evaluate(`(() => { try { document.getElementById('s').sheet.insertRule('x { }', 9); } catch (e) { return e.name; } })()`)).toBe('IndexSizeError');
+  });
+
+  test('constructed sheets and adoptedStyleSheets', () => {
+    page.setContent('<div id=d>adopted</div>');
+    page.evaluate(`const sh = new CSSStyleSheet(); sh.replaceSync('#d { width: 77px }'); document.adoptedStyleSheets = [sh]; window.sh = sh;`);
+    expect(page.box('#d').width).toBe(77);
+    page.evaluate(`sh.insertRule('#d { width: 88px }', 1)`);
+    expect(page.box('#d').width).toBe(88);
+    page.evaluate(`document.adoptedStyleSheets = []`);
+    expect(page.box('#d').width).not.toBe(88);
+  });
+});

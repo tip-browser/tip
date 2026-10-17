@@ -1,6 +1,8 @@
 //! DOM bindings: exposes the document to JavaScript.
 
+pub mod cssom;
 pub mod events;
+pub mod scripts;
 pub mod window;
 
 use std::collections::HashMap;
@@ -264,7 +266,16 @@ fn str_v(s: impl AsRef<str>) -> Value {
     Value::str(s.as_ref())
 }
 
-const REFLECTED: &[&str] = &["id", "title", "lang", "dir", "name", "alt", "placeholder", "rel", "target", "role", "accessKey", "autocomplete", "min", "max", "step", "pattern", "enctype", "download", "hreflang", "media", "sizes", "srcset", "crossOrigin", "loading", "inputMode", "enterKeyHint", "label", "colSpan", "rowSpan", "width", "height", "maxLength", "size", "rows", "cols", "wrap", "accept", "as", "integrity", "nonce", "referrerPolicy", "shape", "coords", "headers", "scope", "abbr", "datetime", "cite", "content", "httpEquiv", "charset", "frameBorder", "border", "align", "valign", "bgColor"];
+const REFLECTED: &[&str] = &["id", "title", "lang", "dir", "name", "alt", "placeholder", "rel", "target", "role", "accessKey", "autocomplete", "min", "max", "step", "pattern", "enctype", "download", "hreflang", "media", "sizes", "srcset", "crossOrigin", "loading", "inputMode", "enterKeyHint", "label", "colSpan", "rowSpan", "width", "height", "maxLength", "size", "rows", "cols", "wrap", "accept", "as", "integrity", "nonce", "referrerPolicy", "shape", "coords", "headers", "scope", "abbr", "datetime", "cite", "content", "httpEquiv", "charset", "frameBorder", "scrolling", "srcdoc", "allow", "marginWidth", "marginHeight", "border", "align", "valign", "bgColor"];
+/// The content attribute behind a reflected IDL property.
+fn reflected_attr(k: &str) -> String {
+    match k {
+        "httpEquiv" => "http-equiv".into(),
+        "acceptCharset" => "accept-charset".into(),
+        _ => k.to_ascii_lowercase(),
+    }
+}
+
 const BOOL_REFLECTED: &[&str] = &["disabled", "hidden", "required", "readOnly", "multiple", "autofocus", "noValidate", "defer", "async", "open", "reversed", "allowFullscreen", "draggable", "spellcheck", "autoplay", "controls", "loop", "muted", "novalidate", "formNoValidate", "isMap", "default", "inert"];
 
 impl HostObject for NodeHost {
@@ -295,6 +306,10 @@ impl HostObject for NodeHost {
     fn get(&self, it: &mut Interp, key: &PropKey) -> Option<R<Value>> {
         let k = key.as_str()?;
         let n = self.0;
+        if matches!(k, "contentWindow" | "contentDocument") && ph(it).doc.tag_is(n, "iframe") {
+            // other frames are separate windows: reachable through a WindowProxy only
+            return Some(Ok(if k == "contentWindow" { crate::frames::content_window(it, n) } else { Value::Null }));
+        }
         let h = ph(it);
         let is_el = h.doc.is_element(n);
         let tag = h.doc.tag(n).unwrap_or("").to_string();
@@ -323,6 +338,8 @@ impl HostObject for NodeHost {
                     str_v(h.doc.text_content(n))
                 }
             }
+            // HTMLScriptElement / HTMLTitleElement / HTMLAnchorElement / HTMLOptionElement .text
+            "text" if matches!(tag.as_str(), "script" | "title" | "a" | "option") => str_v(h.doc.text_content(n)),
             "nodeValue" | "data" | "wholeText" => match &h.doc.node(n).data {
                 NodeData::Text(t) | NodeData::Comment(t) => str_v(t),
                 _ => Value::Null,
@@ -394,20 +411,26 @@ impl HostObject for NodeHost {
                 }
             }
             "attributes" if is_el => {
+                // a NamedNodeMap of Attr objects (prototypes from the prelude)
                 let attrs = h.doc.element(n).map(|e| e.attrs.clone()).unwrap_or_default();
-                let items: Vec<Value> = attrs
-                    .into_iter()
-                    .map(|(k, v)| {
-                        let o = it.new_object();
-                        o.set_prop("name", str_v(&k));
-                        o.set_prop("localName", str_v(&k));
-                        o.set_prop("value", str_v(&v));
-                        o.set_prop("nodeName", str_v(&k));
-                        Value::Obj(o)
-                    })
-                    .collect();
-                let arr = it.new_array(items);
-                return Some(Ok(arr));
+                let proto_of = |it: &mut Interp, name: &str| it.global.get_own(name).and_then(|c| c.as_obj().and_then(|c| c.get_own("prototype"))).and_then(|p| p.as_obj().cloned());
+                let attr_proto = proto_of(it, "Attr").unwrap_or_else(|| it.p.object.clone());
+                let map_proto = proto_of(it, "NamedNodeMap").unwrap_or_else(|| it.p.object.clone());
+                let owner = wrap(it, n);
+                let map = Obj::new(ObjKind::Ordinary, Some(map_proto), "NamedNodeMap");
+                let len = attrs.len();
+                for (i, (k, v)) in attrs.into_iter().enumerate() {
+                    let o = Obj::new(ObjKind::Ordinary, Some(attr_proto.clone()), "Attr");
+                    o.set_hidden("name", str_v(&k));
+                    o.set_hidden("localName", str_v(&k));
+                    o.set_hidden("nodeName", str_v(&k));
+                    o.set_hidden("_value", str_v(&v));
+                    o.set_hidden("ownerElement", owner.clone());
+                    map.set_prop(&i.to_string(), Value::Obj(o));
+                }
+                map.set_hidden("length", Value::Num(len as f64));
+                map.set_hidden("_owner", owner);
+                return Some(Ok(Value::Obj(map)));
             }
             "style" if is_el => Value::Obj(Obj::new(ObjKind::Host(Rc::new(StyleHost(n, false))), Some(protos(it).style_decl.clone()), "CSSStyleDeclaration")),
             "classList" if is_el => Value::Obj(Obj::new(ObjKind::Host(Rc::new(ClassListHost(n))), Some(protos(it).token_list.clone()), "DOMTokenList")),
@@ -567,7 +590,7 @@ impl HostObject for NodeHost {
             "title" if n == 0 => str_v(h.doc.title()),
             "readyState" if n == 0 => str_v(h.ready_state),
             "URL" | "documentURI" if n == 0 => str_v(h.url.to_string()),
-            "baseURI" => str_v(h.url.to_string()),
+            "baseURI" => str_v(h.resolve_url("").map(|u| u.to_string()).unwrap_or_else(|| h.url.to_string())),
             "domain" if n == 0 => str_v(&h.url.host),
             "referrer" if n == 0 => str_v(""),
             "characterSet" | "charset" | "inputEncoding" if n == 0 => str_v("UTF-8"),
@@ -606,7 +629,7 @@ impl HostObject for NodeHost {
             _ => {
                 if is_el {
                     if REFLECTED.contains(&k) {
-                        let attr = k.to_ascii_lowercase();
+                        let attr = reflected_attr(k);
                         return Some(Ok(str_v(h.doc.attr(n, &attr).unwrap_or(""))));
                     }
                     if BOOL_REFLECTED.contains(&k) {
@@ -641,7 +664,7 @@ impl HostObject for NodeHost {
         };
         let r: R<()> = (|| {
             match k {
-                "textContent" | "innerText" | "outerText" | "nodeValue" | "data" => {
+                "textContent" | "innerText" | "outerText" | "nodeValue" | "data" | "text" if k != "text" || matches!(tag.as_str(), "script" | "title" | "a" | "option") => {
                     let s = sval(it)?;
                     let h = ph(it);
                     if k == "innerText" && s.contains('\n') && is_el {
@@ -665,6 +688,7 @@ impl HostObject for NodeHost {
                     let h = ph(it);
                     h.doc.remove_all_children(n);
                     crate::html::parse_fragment_into(&mut h.doc, n, &s);
+                    scripts::mark_started(it, n);
                 }
                 "outerHTML" => {
                     let s = sval(it)?;
@@ -672,6 +696,8 @@ impl HostObject for NodeHost {
                     if let Some(p) = h.doc.parent(n) {
                         let frag = h.doc.create_fragment();
                         crate::html::parse_fragment_into(&mut h.doc, frag, &s);
+                        scripts::mark_started(it, frag);
+                        let h = ph(it);
                         let next = h.doc.next_sibling(n);
                         h.doc.detach(n);
                         h.doc.insert_before(p, frag, next);
@@ -793,6 +819,10 @@ impl HostObject for NodeHost {
                 "dir" | "lang" | "title" | "name" | "alt" | "placeholder" | "rel" | "target" | "role" | "min" | "max" | "step" | "pattern" | "width" | "height" | "rows" | "cols" | "maxLength" | "colSpan" | "rowSpan" | "label" | "download" | "srcset" | "sizes" | "loading" | "autocomplete" | "content" => {
                     let s = sval(it)?;
                     ph(it).doc.set_attr(n, &k.to_ascii_lowercase(), &s);
+                }
+                _ if is_el && REFLECTED.contains(&k) => {
+                    let s = sval(it)?;
+                    ph(it).doc.set_attr(n, &reflected_attr(k), &s);
                 }
                 _ if is_el && BOOL_REFLECTED.contains(&k) => {
                     let attr = k.to_ascii_lowercase();
@@ -1020,7 +1050,9 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
         let n = this_node(it, &this)?;
         let c = node_of(&arg(args, 0)).ok_or_else(|| it.make_error("TypeError", "Failed to execute 'appendChild': parameter 1 is not of type 'Node'."))?;
         check_insert(it, n, c)?;
+        let roots = scripts::roots_of(it, c);
         ph(it).doc.append_child(n, c);
+        scripts::run_inserted(it, &roots);
         Ok(arg(args, 0))
     });
     it.define_method(node, "insertBefore", 2, |it, this, args| {
@@ -1028,7 +1060,9 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
         let c = node_of(&arg(args, 0)).ok_or_else(|| it.make_error("TypeError", "parameter 1 is not of type 'Node'."))?;
         let before = node_of(&arg(args, 1));
         check_insert(it, n, c)?;
+        let roots = scripts::roots_of(it, c);
         ph(it).doc.insert_before(n, c, before);
+        scripts::run_inserted(it, &roots);
         Ok(arg(args, 0))
     });
     it.define_method(node, "removeChild", 1, |it, this, args| {
@@ -1044,10 +1078,12 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
         let n = this_node(it, &this)?;
         let newc = node_of(&arg(args, 0)).ok_or_else(|| it.make_error("TypeError", "parameter 1 is not of type 'Node'."))?;
         let old = node_of(&arg(args, 1)).ok_or_else(|| it.make_error("TypeError", "parameter 2 is not of type 'Node'."))?;
+        let roots = scripts::roots_of(it, newc);
         let h = ph(it);
         let next = h.doc.next_sibling(old);
         h.doc.detach(old);
         h.doc.insert_before(n, newc, next);
+        scripts::run_inserted(it, &roots);
         Ok(arg(args, 1))
     });
     it.define_method(node, "cloneNode", 1, |it, this, args| {
@@ -1112,6 +1148,10 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
             for a in args {
                 nodes.push(to_node_or_text(it, a)?);
             }
+            let mut roots = Vec::new();
+            for &c in &nodes {
+                roots.extend(scripts::roots_of(it, c));
+            }
             let h = ph(it);
             match mode {
                 0 => {
@@ -1142,6 +1182,7 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
                     }
                 }
             }
+            scripts::run_inserted(it, &roots);
             Ok(Value::Undefined)
         });
     }
@@ -1304,14 +1345,17 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
         let h = ph(it);
         let frag = h.doc.create_fragment();
         crate::html::parse_fragment_into(&mut h.doc, frag, &html);
-        insert_adjacent(h, n, &pos, frag);
+        scripts::mark_started(it, frag);
+        insert_adjacent(ph(it), n, &pos, frag);
         Ok(Value::Undefined)
     });
     it.define_method(el, "insertAdjacentElement", 2, |it, this, args| {
         let n = this_node(it, &this)?;
         let pos = it.to_str(&arg(args, 0))?.to_ascii_lowercase();
         let Some(c) = node_of(&arg(args, 1)) else { return Ok(Value::Null) };
+        let roots = scripts::roots_of(it, c);
         insert_adjacent(ph(it), n, &pos, c);
+        scripts::run_inserted(it, &roots);
         Ok(arg(args, 1))
     });
     it.define_method(el, "insertAdjacentText", 2, |it, this, args| {
@@ -1688,6 +1732,17 @@ pub fn install(it: &mut Interp) {
     let doc = wrap(it, 0);
     it.global.set_hidden("document", doc);
     let g = it.global.clone();
+    cssom::install(it);
+    // window named access: a bare `foo` finds the element with id="foo"
+    it.named_lookup = Some(|it, name| {
+        let n = ph(it).doc.get_element_by_id(name)?;
+        Some(wrap(it, n))
+    });
+    it.define_method(&g, "__tip_port_send", 2, |it, _, args| {
+        let peer = it.to_number(&arg(args, 0))? as u64;
+        crate::frames::port_send(it, peer, &arg(args, 1))?;
+        Ok(Value::Undefined)
+    });
     it.define_method(&g, "__tip_blob_register", 3, |it, _, args| {
         let url = it.to_string_lossy(&arg(args, 0));
         let bytes = crate::js::builtins::typed::bytes_of(&arg(args, 1)).unwrap_or_default();

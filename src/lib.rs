@@ -22,3 +22,4 @@ pub mod tab;
 pub mod app;
 pub mod devtools;
 pub mod rust;
+pub mod frames;

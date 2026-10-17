@@ -62,6 +62,8 @@ pub enum NavRequest {
     /// pushState/replaceState or hash change: URL changes without a load
     SameDocument { url: Url, replace: bool },
     Open(Url),
+    /// From a frame: navigate the parent (or the top-level) browsing context instead.
+    Up { nav: Box<NavRequest>, top: bool },
 }
 
 /// Messages from internal UI pages (browser chrome, DevTools) to the app.
@@ -177,7 +179,36 @@ pub struct PageHost {
     rules: Option<(u64, Rc<RuleSet>, Vec<SheetInfo>)>,
     styles: Option<((u64, u64, (u32, u32)), Rc<Styles>)>,
     layout: Option<((u64, u64, (u32, u32)), Rc<LayoutResult>)>,
-    display: Option<((u64, u64, (u32, u32), Option<NodeId>), Rc<DisplayList>)>,
+    pub(crate) display: Option<((u64, u64, (u32, u32), Option<NodeId>, u64), Rc<DisplayList>)>,
+    /// Child browsing contexts, one per `<iframe>` in the document.
+    pub frames: Vec<crate::frames::Frame>,
+    pub frames_version: u64,
+    /// Set when this page is itself inside a frame.
+    pub parent: Option<crate::frames::ParentLink>,
+    /// `message` events waiting to be fired on this window.
+    pub inbox: Vec<crate::frames::Message>,
+    /// WindowProxy objects for other windows, by id (frame node, or parent/top).
+    pub frame_proxies: crate::frames::FrameProxies,
+    /// Rules of sheets edited through the CSSOM (`insertRule`, ...), by owner element.
+    pub cssom: HashMap<NodeId, Vec<String>>,
+    /// Constructed stylesheets (`new CSSStyleSheet()`) and the ones adopted by the document.
+    pub constructed_sheets: HashMap<u64, Vec<String>>,
+    pub adopted_sheets: Vec<u64>,
+    /// Source text of linked stylesheets, by URL (for `cssRules`).
+    pub sheet_texts: HashMap<String, String>,
+    /// MessagePort ends in this window whose peer is in another window, by mailbox id.
+    pub ports: HashMap<u64, Value>,
+    /// Frame navigations requested through `frame.location`.
+    pub frame_navs: Vec<(NodeId, Url)>,
+    /// Scripts that have run (or been fetched to run), so each runs once.
+    pub started_scripts: std::collections::HashSet<NodeId>,
+    /// External scripts inserted by script, being downloaded.
+    pub pending_scripts: Vec<crate::bindings::scripts::PendingScript>,
+    /// The frame receiving a mouse drag, and the one under the pointer.
+    pub frame_capture: Option<NodeId>,
+    pub frame_hover: Option<NodeId>,
+    /// Base URL for documents without one of their own (`srcdoc` frames use the parent's).
+    pub base_override: Option<Url>,
     img_tx: Sender<(String, Result<Image, String>, NetLogEntry)>,
     img_rx: Receiver<(String, Result<Image, String>, NetLogEntry)>,
     img_inflight: usize,
@@ -263,6 +294,22 @@ impl PageHost {
             styles: None,
             layout: None,
             display: None,
+            frames: Vec::new(),
+            frames_version: u64::MAX,
+            parent: None,
+            inbox: Vec::new(),
+            frame_proxies: Default::default(),
+            frame_navs: Vec::new(),
+            ports: HashMap::new(),
+            cssom: HashMap::new(),
+            constructed_sheets: HashMap::new(),
+            adopted_sheets: Vec::new(),
+            sheet_texts: HashMap::new(),
+            base_override: None,
+            started_scripts: Default::default(),
+            pending_scripts: Vec::new(),
+            frame_capture: None,
+            frame_hover: None,
             img_tx,
             img_rx,
             img_inflight: 0,
@@ -298,7 +345,7 @@ impl PageHost {
             .first()
             .and_then(|&b| self.doc.attr(b, "href"))
             .and_then(|h| self.url.join(h))
-            .unwrap_or_else(|| self.url.clone());
+            .unwrap_or_else(|| self.base_override.clone().unwrap_or_else(|| self.url.clone()));
         base.join(s)
     }
 
@@ -312,7 +359,9 @@ impl PageHost {
         let r = net::fetch_logged(&Request::get(url.clone()), "stylesheet", &mut self.net_log);
         let sheet = match r {
             Ok(resp) if resp.ok() => {
-                let mut sheet = css::parse_stylesheet(&resp.text());
+                let text = resp.text();
+                let mut sheet = css::parse_stylesheet(&text);
+                self.sheet_texts.insert(key.clone(), text);
                 self.resolve_sheet_urls(&mut sheet, url);
                 self.inline_imports(&mut sheet, url, 0);
                 Some(Rc::new(sheet))
@@ -378,7 +427,10 @@ impl PageHost {
                 if self.doc.attr(n, "media").is_some_and(|m| m.contains("print")) {
                     continue;
                 }
-                let text = self.doc.text_content(n);
+                let text = match self.cssom.get(&n) {
+                    Some(r) => r.join("\n"),
+                    None => self.doc.text_content(n),
+                };
                 let h = hash_str(&text);
                 let cached = self.inline_sheets.get(&n).filter(|e| e.text_len == text.len() && e.text_hash == h).map(|e| e.sheet.clone());
                 let sheet = match cached {
@@ -405,10 +457,28 @@ impl PageHost {
                 }
                 let Some(href) = self.doc.attr(n, "href") else { continue };
                 let Some(u) = self.resolve_url(href) else { continue };
+                if let Some(r) = self.cssom.get(&n) {
+                    // edited through the CSSOM
+                    let mut s = css::parse_stylesheet(&r.join("\n"));
+                    self.resolve_sheet_urls(&mut s, &u);
+                    out.push((Origin::Author, Rc::new(s)));
+                    info.push(SheetInfo { source: u.to_string(), origin: Origin::Author });
+                    continue;
+                }
                 if let Some(s) = self.fetch_sheet(&u) {
                     out.push((Origin::Author, s));
                     info.push(SheetInfo { source: u.to_string(), origin: Origin::Author });
                 }
+            }
+        }
+        // document.adoptedStyleSheets come after the document's own sheets
+        for id in self.adopted_sheets.clone() {
+            if let Some(r) = self.constructed_sheets.get(&id) {
+                let mut s = css::parse_stylesheet(&r.join("\n"));
+                let base = self.resolve_url("").unwrap_or_else(|| self.url.clone());
+                self.resolve_sheet_urls(&mut s, &base);
+                out.push((Origin::Author, Rc::new(s)));
+                info.push(SheetInfo { source: "adopted stylesheet".into(), origin: Origin::Author });
             }
         }
         (out, info)
@@ -470,7 +540,8 @@ impl PageHost {
     }
 
     pub fn display_list(&mut self) -> Rc<DisplayList> {
-        let key = (self.doc.version, self.render_gen, self.vp_key(), self.highlight);
+        let frames = self.frames_paint_key();
+        let key = (self.doc.version, self.render_gen, self.vp_key(), self.highlight, frames);
         if let Some((k, d)) = &self.display {
             if *k == key {
                 return d.clone();
@@ -906,6 +977,9 @@ impl paint::PaintEnv for Env<'_> {
     fn node_image(&self, node: NodeId) -> Option<Rc<Image>> {
         self.image(node)
     }
+    fn frame(&self, node: NodeId) -> Option<(Rc<DisplayList>, (f32, f32))> {
+        self.host.frame_picture(node)
+    }
     fn url_image(&self, url: &str) -> Option<Rc<Image>> {
         // URLs from style attributes are still relative to the document
         let resolved;
@@ -1127,6 +1201,7 @@ impl Page {
         self.fire_simple(Target::Node(0), "readystatechange", false);
         self.fire_simple(Target::Window, "load", false);
         self.after_task();
+        self.sync_frames();
         // scroll to fragment
         if let Some(f) = self.host().url.fragment.clone() {
             self.scroll_to_anchor(&f);
@@ -1134,6 +1209,9 @@ impl Page {
     }
 
     pub fn run_script_element(&mut self, s: NodeId) {
+        if !self.host_mut().started_scripts.insert(s) {
+            return;
+        }
         let (ty, src, text) = {
             let h = self.host();
             let ty = h.doc.attr(s, "type").unwrap_or("").to_ascii_lowercase();
@@ -1284,11 +1362,15 @@ impl Page {
     // ------------------------------------------------------------ timers
 
     pub fn next_timer_due(&self) -> Option<Instant> {
-        self.host().timers.iter().map(|t| t.due).min()
+        let own = self.host().timers.iter().map(|t| t.due).min();
+        match (own, self.frames_next_timer_due()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     pub fn has_animation_frames(&self) -> bool {
-        !self.host().raf.is_empty()
+        !self.host().raf.is_empty() || self.frames_have_animation_frames()
     }
 
     /// Run due timers. Returns true if any ran.
@@ -1331,6 +1413,7 @@ impl Page {
     }
 
     pub fn run_animation_frames(&mut self) {
+        self.run_frame_animation_frames();
         let cbs = std::mem::take(&mut self.host_mut().raf);
         let t = Value::Num(crate::bindings::window::perf_now());
         for (_, cb) in cbs {
@@ -1355,12 +1438,14 @@ impl Page {
             self.after_task();
         }
         let b = self.run_timers();
-        a || b || f
+        let c = crate::frames::take_frame_navs(self) | self.poll_frames();
+        let d = self.poll_scripts();
+        a || b || f || c || d
     }
 
     pub fn has_pending_work(&self) -> bool {
         let h = self.host();
-        h.images_pending() || !h.pending_fetches.is_empty() || !h.img_watch.is_empty()
+        h.images_pending() || !h.pending_fetches.is_empty() || !h.img_watch.is_empty() || !h.inbox.is_empty() || !h.pending_scripts.is_empty() || self.frames_have_pending_work() || self.has_port_messages()
     }
 
     fn notify_mutation_observers(&mut self) {

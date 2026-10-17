@@ -362,8 +362,14 @@
   // ---------------------------------------------------------------- messaging
   if (typeof g.MessageChannel !== 'function') {
     class MessagePort extends EventTarget {
-      constructor() { super(); this._other = null; this._open = true; this.onmessage = null; this.onmessageerror = null; }
+      constructor() { super(); this._other = null; this._open = true; this.onmessage = null; this.onmessageerror = null; this._id = 0; this._remote = 0; }
+      get __tipPort() { return true; }
       postMessage(data) {
+        if (this._remote) {
+          // the other end lives in another window
+          if (this._open) __tip_port_send(this._remote, data);
+          return;
+        }
         const to = this._other;
         if (!to || !to._open || !this._open) return;
         const copy = typeof structuredClone === 'function' ? structuredClone(data) : data;
@@ -379,6 +385,10 @@
     define('MessagePort', MessagePort);
     define('MessageChannel', MessageChannel);
   }
+  Object.defineProperty(g, '__tip_port_deliver', {
+    value: (port, data) => { if (port._open) port.dispatchEvent(new MessageEvent('message', { data })); },
+    configurable: true,
+  });
   if (typeof g.BroadcastChannel !== 'function') {
     const channels = new Map();
     class BroadcastChannel extends EventTarget {
@@ -420,4 +430,250 @@
     class XMLSerializer { serializeToString(node) { return node.nodeType === 9 ? node.documentElement.outerHTML : node.nodeType === 1 ? node.outerHTML : node.textContent; } }
     define('XMLSerializer', XMLSerializer);
   }
+})();
+
+// AbortSignal: the type of AbortController#signal, plus its static helpers
+(() => {
+  function AbortSignal() { throw new TypeError('Illegal constructor'); }
+  AbortSignal.prototype = Object.create(EventTarget.prototype, { constructor: { value: AbortSignal, writable: true, configurable: true } });
+  Object.defineProperty(AbortSignal.prototype, Symbol.toStringTag, { value: 'AbortSignal', configurable: true });
+  AbortSignal.prototype.throwIfAborted = function () { if (this.aborted) throw this.reason; };
+  AbortSignal.abort = function (reason) {
+    const c = new AbortController();
+    c.abort(reason);
+    return c.signal;
+  };
+  AbortSignal.timeout = function (ms) {
+    const c = new AbortController();
+    setTimeout(() => c.abort(new DOMException('signal timed out', 'TimeoutError')), Number(ms) || 0);
+    return c.signal;
+  };
+  AbortSignal.any = function (signals) {
+    const c = new AbortController();
+    for (const s of signals) {
+      if (s.aborted) { c.abort(s.reason); return c.signal; }
+    }
+    for (const s of signals) s.addEventListener('abort', () => c.abort(s.reason));
+    return c.signal;
+  };
+  Object.defineProperty(globalThis, 'AbortSignal', { value: AbortSignal, writable: true, configurable: true });
+})();
+
+// CSSOM: document.styleSheets, element.sheet, CSSStyleSheet with insertRule/deleteRule,
+// constructed sheets and document.adoptedStyleSheets
+(() => {
+  const g = globalThis;
+  const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true, enumerable: false });
+  const RULE_TYPES = { style: 1, import: 3, media: 4, 'font-face': 5, page: 6, keyframes: 7, namespace: 10, supports: 12, layer: 18, container: 19 };
+  const parseDecls = (body) => {
+    const out = [];
+    for (const part of body.split(';')) {
+      const i = part.indexOf(':');
+      if (i > 0) out.push([part.slice(0, i).trim().toLowerCase(), part.slice(i + 1).trim()]);
+    }
+    return out;
+  };
+  class CSSRuleStyle {
+    constructor(rule, body) { Object.defineProperty(this, '_decls', { value: parseDecls(body), writable: true }); }
+    get length() { return this._decls.length; }
+    item(i) { return this._decls[i] ? this._decls[i][0] : ''; }
+    getPropertyValue(p) { const d = this._decls.find((x) => x[0] === String(p).toLowerCase()); return d ? d[1].replace(/\s*!important\s*$/i, '') : ''; }
+    getPropertyPriority(p) { const d = this._decls.find((x) => x[0] === String(p).toLowerCase()); return d && /!important\s*$/i.test(d[1]) ? 'important' : ''; }
+    get cssText() { return this._decls.map(([k, v]) => k + ': ' + v + ';').join(' '); }
+  }
+  class CSSRule {
+    constructor(text, sheet, parent) {
+      Object.defineProperties(this, { _text: { value: text }, parentStyleSheet: { value: sheet || null }, parentRule: { value: parent || null } });
+      const at = /^@([-\w]+)/.exec(text);
+      const kind = at ? at[1].replace(/^-\w+-/, '').toLowerCase() : 'style';
+      Object.defineProperty(this, 'type', { value: RULE_TYPES[kind] || 0 });
+      const brace = text.indexOf('{');
+      const head = brace >= 0 ? text.slice(0, brace).trim() : text.replace(/;$/, '').trim();
+      const body = brace >= 0 ? text.slice(brace + 1, text.lastIndexOf('}')) : '';
+      if (kind === 'style') {
+        this.selectorText = head;
+        this.style = new CSSRuleStyle(this, body);
+      } else if (kind === 'media' || kind === 'supports' || kind === 'container' || kind === 'layer') {
+        const cond = head.replace(/^@[-\w]+\s*/, '');
+        if (kind === 'media') this.media = { mediaText: cond, length: cond ? cond.split(',').length : 0, toString() { return cond; } };
+        else this.conditionText = cond;
+        const inner = __tip_css_split(body);
+        this.cssRules = makeRuleList(inner.map((t) => new CSSRule(t, sheet, this)));
+      } else if (kind === 'keyframes') {
+        this.name = head.replace(/^@[-\w]+\s*/, '');
+        this.cssRules = makeRuleList(__tip_css_split(body).map((t) => new CSSRule(t, sheet, this)));
+      } else if (kind === 'font-face' || kind === 'page') {
+        this.style = new CSSRuleStyle(this, body);
+      } else if (kind === 'import') {
+        const m = /url\(\s*['"]?([^'")]+)/.exec(head) || /['"]([^'"]+)['"]/.exec(head);
+        this.href = m ? m[1] : '';
+      }
+    }
+    get cssText() { return this._text; }
+  }
+  const makeRuleList = (rules) => {
+    const list = Object.create(CSSRuleList.prototype);
+    rules.forEach((r, i) => { list[i] = r; });
+    Object.defineProperty(list, 'length', { value: rules.length });
+    return list;
+  };
+  function CSSRuleList() { throw new TypeError('Illegal constructor'); }
+  CSSRuleList.prototype.item = function (i) { return this[i] || null; };
+  CSSRuleList.prototype[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) yield this[i]; };
+
+  let nextId = 1;
+  class CSSStyleSheet {
+    constructor(options) {
+      Object.defineProperty(this, '_id', { value: nextId++ });
+      Object.defineProperty(this, '_owner', { value: null, writable: true });
+      Object.defineProperty(this, '_list', { value: [], writable: true });
+      const media = options && options.media ? String(options.media) : '';
+      this.media = { mediaText: media, length: media ? 1 : 0, toString() { return media; } };
+      this.disabled = !!(options && options.disabled);
+    }
+    _texts() { return this._owner ? (__tip_sheet_rules(this._owner) || []) : this._list.slice(); }
+    _commit(list) { if (this._owner) __tip_sheet_set(this._owner, list); else { this._list = list; __tip_csheet_set(this._id, list); } }
+    get ownerNode() { return this._owner; }
+    get href() {
+      const o = this._owner;
+      return o && o.localName === 'link' ? o.href : null;
+    }
+    get type() { return 'text/css'; }
+    get title() { return this._owner ? this._owner.getAttribute('title') : null; }
+    get parentStyleSheet() { return null; }
+    get ownerRule() { return null; }
+    get cssRules() { return makeRuleList(this._texts().map((t) => new CSSRule(t, this))); }
+    get rules() { return this.cssRules; }
+    insertRule(rule, index) {
+      const list = this._texts();
+      const i = index === undefined ? 0 : Number(index) >>> 0;
+      if (i > list.length) throw new DOMException(`Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (${i}) is larger than the maximum index (${list.length}).`, 'IndexSizeError');
+      const parsed = __tip_css_split(String(rule));
+      if (parsed.length !== 1) throw new DOMException(`Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '${rule}'.`, 'SyntaxError');
+      list.splice(i, 0, parsed[0]);
+      this._commit(list);
+      return i;
+    }
+    deleteRule(index) {
+      const list = this._texts();
+      const i = Number(index) >>> 0;
+      if (i >= list.length) throw new DOMException(`Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (${i}) is larger than the maximum index (${list.length - 1}).`, 'IndexSizeError');
+      list.splice(i, 1);
+      this._commit(list);
+    }
+    addRule(selector, style, index) {
+      const len = this._texts().length;
+      this.insertRule(`${selector} { ${style} }`, index === undefined ? len : index);
+      return -1;
+    }
+    removeRule(index) { this.deleteRule(index === undefined ? 0 : index); }
+    replaceSync(text) { this._commit(__tip_css_split(String(text))); }
+    replace(text) { try { this.replaceSync(text); return Promise.resolve(this); } catch (e) { return Promise.reject(e); } }
+    get [Symbol.toStringTag]() { return 'CSSStyleSheet'; }
+  }
+  const sheets = new WeakMap();
+  const sheetOf = (el) => {
+    if (el.localName === 'link' && !/(^|\s)stylesheet(\s|$)/i.test(el.getAttribute('rel') || '')) return null;
+    if (!el.isConnected) return null;
+    let s = sheets.get(el);
+    if (!s) {
+      s = new CSSStyleSheet();
+      s._owner = el;
+      const media = el.getAttribute('media') || '';
+      s.media = { mediaText: media, length: media ? 1 : 0, toString() { return media; } };
+      sheets.set(el, s);
+    }
+    return s;
+  };
+  for (const C of [g.HTMLStyleElement, g.HTMLLinkElement]) {
+    if (C && C.prototype) Object.defineProperty(C.prototype, 'sheet', { get() { return sheetOf(this); }, configurable: true });
+  }
+  function StyleSheetList() { throw new TypeError('Illegal constructor'); }
+  StyleSheetList.prototype.item = function (i) { return this[i] || null; };
+  StyleSheetList.prototype[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) yield this[i]; };
+  Object.defineProperty(Document.prototype, 'styleSheets', {
+    get() {
+      const list = Object.create(StyleSheetList.prototype);
+      let n = 0;
+      for (const el of this.querySelectorAll('style, link[rel~="stylesheet" i]')) {
+        const s = sheetOf(el);
+        if (s) list[n++] = s;
+      }
+      Object.defineProperty(list, 'length', { value: n });
+      return list;
+    },
+    configurable: true,
+  });
+  let adopted = Object.freeze([]);
+  Object.defineProperty(Document.prototype, 'adoptedStyleSheets', {
+    get() { return adopted; },
+    set(v) {
+      const arr = Array.from(v);
+      for (const s of arr) if (!(s instanceof CSSStyleSheet) || s._owner) throw new DOMException("Failed to set the 'adoptedStyleSheets' property on 'Document': Can't adopt non-constructed stylesheets.", 'NotAllowedError');
+      adopted = Object.freeze(arr);
+      __tip_adopt(arr.map((s) => s._id));
+    },
+    configurable: true,
+  });
+  define('CSSStyleSheet', CSSStyleSheet);
+  define('StyleSheet', CSSStyleSheet);
+  define('CSSRule', CSSRule);
+  define('CSSStyleRule', CSSRule);
+  define('CSSMediaRule', CSSRule);
+  define('CSSRuleList', CSSRuleList);
+  define('StyleSheetList', StyleSheetList);
+})();
+
+// Attr and NamedNodeMap (element.attributes)
+(() => {
+  const g = globalThis;
+  const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true, enumerable: false });
+  function Attr() { throw new TypeError('Illegal constructor'); }
+  Object.defineProperties(Attr.prototype, {
+    value: {
+      get() { return this.ownerElement ? (this.ownerElement.getAttribute(this.name) ?? this._value) : this._value; },
+      set(v) { this._value = String(v); if (this.ownerElement) this.ownerElement.setAttribute(this.name, this._value); },
+      configurable: true,
+    },
+    nodeValue: { get() { return this.value; }, set(v) { this.value = v; }, configurable: true },
+    textContent: { get() { return this.value; }, set(v) { this.value = v; }, configurable: true },
+    specified: { get() { return true; }, configurable: true },
+    namespaceURI: { get() { return null; }, configurable: true },
+    prefix: { get() { return null; }, configurable: true },
+    nodeType: { get() { return 2; }, configurable: true },
+    [Symbol.toStringTag]: { value: 'Attr', configurable: true },
+  });
+  function NamedNodeMap() { throw new TypeError('Illegal constructor'); }
+  Object.assign(NamedNodeMap.prototype, {
+    item(i) { return this[i] || null; },
+    getNamedItem(name) {
+      const n = String(name).toLowerCase();
+      for (let i = 0; i < this.length; i++) if (this[i].name === n) return this[i];
+      return null;
+    },
+    getNamedItemNS(ns, name) { return this.getNamedItem(name); },
+    setNamedItem(attr) { const old = this.getNamedItem(attr.name); this._owner.setAttribute(attr.name, attr.value); return old; },
+    removeNamedItem(name) {
+      const old = this.getNamedItem(name);
+      if (!old) throw new DOMException(`Failed to execute 'removeNamedItem' on 'NamedNodeMap': No item with name '${name}' was found.`, 'NotFoundError');
+      this._owner.removeAttribute(name);
+      return old;
+    },
+    removeNamedItemNS(ns, name) { return this.removeNamedItem(name); },
+  });
+  NamedNodeMap.prototype[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) yield this[i]; };
+  Object.defineProperty(NamedNodeMap.prototype, Symbol.toStringTag, { value: 'NamedNodeMap', configurable: true });
+  define('Attr', Attr);
+  define('NamedNodeMap', NamedNodeMap);
+  // document.createAttribute and element.getAttributeNode / setAttributeNode
+  if (!Document.prototype.createAttribute) {
+    Document.prototype.createAttribute = function (name) {
+      const a = Object.create(Attr.prototype);
+      Object.defineProperties(a, { name: { value: String(name).toLowerCase() }, localName: { value: String(name).toLowerCase() }, nodeName: { value: String(name).toLowerCase() }, ownerElement: { value: null, writable: true }, _value: { value: '', writable: true } });
+      return a;
+    };
+  }
+  Element.prototype.getAttributeNode = function (name) { return this.attributes.getNamedItem(name); };
+  Element.prototype.setAttributeNode = function (attr) { const old = this.getAttributeNode(attr.name); this.setAttribute(attr.name, attr.value); return old; };
+  Element.prototype.removeAttributeNode = function (attr) { this.removeAttribute(attr.name); return attr; };
 })();

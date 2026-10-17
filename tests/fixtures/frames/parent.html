@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><title>frames</title><style>body{margin:0} iframe{display:block;border:0;width:400px;height:200px}</style></head>
+<body>
+<iframe id=f name=kid src="child.html"></iframe>
+<iframe id=s srcdoc="<p id=x style='margin:0'>from srcdoc</p><script>parent.postMessage({kind:'srcdoc', base: document.baseURI.endsWith('parent.html')}, '*')</script>"></iframe>
+<pre id=log></pre>
+<script>
+  window.msgs = [];
+  window.loads = 0;
+  document.getElementById('f').addEventListener('load', () => loads++);
+  window.addEventListener('message', (e) => {
+    msgs.push(e.data.kind);
+    const f = document.getElementById('f');
+    if (e.data.kind === 'ready') {
+      window.readyFromKid = e.source === f.contentWindow;
+      window.kidSawTop = e.data.top;
+      f.contentWindow.postMessage({ kind: 'ping', n: 41 }, '*');
+    }
+    if (e.data.kind === 'pong') window.pong = e.data;
+    if (e.data.kind === 'clicked') window.clicked = e.data;
+    if (e.data.kind === 'typed') window.typed = e.data.value;
+    if (e.data.kind === 'srcdoc') window.srcdocBase = e.data.base;
+    document.getElementById('log').textContent = msgs.join(',');
+  });
+</script>
+</body></html>

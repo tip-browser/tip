@@ -26,6 +26,8 @@ pub enum Item {
     /// Start a group composited with `opacity` (CSS opacity); `bounds` limits the work.
     PushLayer { bounds: Rect, opacity: f32 },
     PopLayer,
+    /// Another document's picture (an iframe), drawn into `rect` with its own scroll.
+    Embed { rect: Rect, list: Rc<DisplayList>, scroll: (f32, f32) },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +42,8 @@ pub struct DisplayList {
     pub items: Vec<Item>,
     pub hits: Vec<Hit>,
     pub background: Color,
+    /// Where iframes' documents are drawn (content boxes), for routing input to them.
+    pub frames: Vec<Hit>,
 }
 
 impl DisplayList {
@@ -70,6 +74,10 @@ pub struct ControlState {
 
 pub trait PaintEnv {
     fn node_image(&self, node: NodeId) -> Option<Rc<Image>>;
+    /// The picture of an iframe's document and its scroll position.
+    fn frame(&self, _node: NodeId) -> Option<(Rc<DisplayList>, (f32, f32))> {
+        None
+    }
     fn url_image(&self, url: &str) -> Option<Rc<Image>>;
     fn control(&self, node: NodeId) -> ControlState;
     fn document(&self) -> Option<&crate::dom::Document> {
@@ -495,6 +503,19 @@ impl Builder<'_> {
                 }
             }
             Replaced::Placeholder => {
+                if let Some((list, scroll)) = self.env.frame(node) {
+                    if c.w > 0.0 && c.h > 0.0 {
+                        self.push(Item::Embed { rect: c, list, scroll });
+                        let fixed = self.fixed;
+                        let r = match self.current_clip() {
+                            Some(cl) => c.intersect(&cl),
+                            None => c,
+                        };
+                        // the frame's rect for input routing; still its full box, clipped
+                        self.list.frames.push(Hit { rect: if r.is_empty() { r } else { c }, node, fixed });
+                    }
+                    return;
+                }
                 let Some(doc) = self.env.document() else { return };
                 if doc.tag(node).is_some_and(|t| t.eq_ignore_ascii_case("svg")) {
                     let shapes = crate::svg::render(doc, node, c, s.color, s.font_size, &s.svg);
@@ -831,6 +852,15 @@ pub fn render(list: &DisplayList, canvas: &mut Canvas, vp: &Viewport) {
                 }
             }
             Item::SetFixed(f) => fixed = *f,
+            Item::Embed { rect, list: inner, scroll } => {
+                let r = tf(*rect, fixed);
+                if r.intersect(&visible).is_empty() {
+                    continue;
+                }
+                canvas.push_clip(r);
+                render(inner, canvas, &Viewport { ox: r.x, oy: r.y, w: r.w, h: r.h, scale: s, scroll: *scroll });
+                canvas.pop_clip();
+            }
             Item::PushClip(r) => {
                 canvas.push_clip(tf(*r, fixed));
                 clip_depth += 1;

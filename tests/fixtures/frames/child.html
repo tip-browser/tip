@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><style>body{margin:0;font:14px sans-serif;background:#e0f2fe} #btn{position:absolute;left:10px;top:60px;width:100px;height:30px} #field{position:absolute;left:150px;top:60px;width:120px;height:24px}</style></head>
+<body>
+<p id=info>child</p>
+<button id=btn>Press</button>
+<input id=field>
+<a id=toplink href="parent.html?navigated" target="_top" style="position:absolute;left:10px;top:120px;width:80px;height:20px;display:block">top</a>
+<script>
+  document.getElementById('info').textContent = 'child of ' + (window.parent !== window ? 'a frame' : 'nobody') + ' named ' + window.name;
+  document.getElementById('btn').addEventListener('click', () => {
+    parent.postMessage({ kind: 'clicked', at: Date.now() > 0, list: [1, 2, { deep: 'yes' }] }, '*');
+  });
+  document.getElementById('field').addEventListener('input', (e) => {
+    parent.postMessage({ kind: 'typed', value: e.target.value }, '*');
+  });
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.kind === 'port') {
+      const port = e.ports[0];
+      port.onmessage = (ev) => port.postMessage({ doubled: ev.data * 2 });
+      port.postMessage('hello over the port');
+      return;
+    }
+    if (e.data && e.data.kind === 'ping') {
+      e.source.postMessage({ kind: 'pong', n: e.data.n + 1, sameSource: e.source === window.parent, origin: e.origin }, e.origin);
+    }
+  });
+  parent.postMessage({ kind: 'ready', title: document.title, top: window.top === window.parent }, '*');
+</script>
+</body></html>

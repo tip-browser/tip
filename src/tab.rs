@@ -244,6 +244,8 @@ impl Tab {
                 self.page.host_mut().history_len = self.history.len();
             }
             NavRequest::Open(url) => self.open_requests.push(url),
+            // a top-level page has no parent: it navigates itself
+            NavRequest::Up { nav, .. } => self.handle_nav(*nav, blocking),
         }
     }
 

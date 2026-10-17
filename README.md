@@ -93,7 +93,14 @@ See [examples/rust.html](examples/rust.html).
 - Storage: `localStorage` (persisted to `~/.tip/`) and `sessionStorage`.
 - `URL` / `URLSearchParams`, `FormData`, `history` / `location`.
 - Observers: `MutationObserver`, `IntersectionObserver`, `ResizeObserver`.
-- `DOMParser`, `TextEncoder`, `crypto.randomUUID`, and more.
+- Frames: `<iframe>` (`src` and `srcdoc`) loads a nested document with its own JavaScript.
+  - The parent draws the frame's document inside the iframe box and sends clicks, scrolling and typing to it.
+  - Windows talk through `postMessage`. Messages are structured-cloned, and `MessagePort`s can be transferred between windows.
+  - Scripts reach other windows through `contentWindow`, `parent`, `top` and `frames[i]`. Tip treats every frame as cross-origin, so `contentDocument` is `null`.
+  - Pages that refuse framing (`X-Frame-Options`, CSP `frame-ancestors`) are blocked.
+- Scripts inserted at run time run like the page's own: inline scripts run on insertion, and external scripts load asynchronously and then fire `load` / `error`.
+- CSSOM: `document.styleSheets`, `element.sheet`, `cssRules`, `insertRule` / `deleteRule` (the CSS-in-JS fast path), constructed sheets and `adoptedStyleSheets`.
+- `DOMParser`, `TextEncoder`, `crypto.randomUUID`, `AbortSignal`, and more.
 
 **Browser.** Tabs, back/forward history, address bar, zoom, keyboard shortcuts, form submission (GET/POST) and text editing with a caret. The toolbar and DevTools are HTML pages rendered by the engine itself.
 
@@ -145,6 +152,7 @@ src/
   net/                      URL parsing, HTTP/1.1 client, OS TLS bridge, cookies
   js/                       lexer, parser, interpreter, builtins, regex, coroutines
   rust/                     in-page Rust: lexer, parser, closure compiler, std library, `web` bridge
+  frames.rs                 <iframe> browsing contexts, WindowProxy, postMessage, MessagePort transfer
   bindings/                 DOM host objects, events, window APIs
   page.rs input.rs tab.rs   documents, input handling, navigation/history
   app.rs devtools.rs        browser UI (rendered by the engine) and DevTools
@@ -169,5 +177,6 @@ These are areas the engine doesn't cover yet:
 - `<canvas>`, video, SVG filters and text
 - CSS transforms other than translate, animations and transitions
 - Shadow DOM, Web Workers
+- same-origin script access into frames (`contentDocument`): every frame is treated as cross-origin
 - IME input
 - Windows: the release `tip.exe` is a GUI-subsystem binary, so console output from CLI commands attaches to the parent console.

@@ -139,7 +139,23 @@ pub fn make_event(it: &mut Interp, ty: &str, kind: &str, init: &EventInit, trust
     for (k, v) in &init.props {
         o.set_prop(k, v.clone());
     }
+    apply_defaults(it, kind, &o);
     Value::Obj(o)
+}
+
+/// Members an event interface always has, when the init dictionary left them out.
+fn apply_defaults(it: &mut Interp, kind: &str, o: &Obj) {
+    if kind == "MessageEvent" {
+        for (k, v) in [("data", Value::Null), ("origin", Value::str("")), ("lastEventId", Value::str("")), ("source", Value::Null)] {
+            if o.get_own(k).is_none() {
+                o.set_prop(k, v);
+            }
+        }
+        if o.get_own("ports").is_none() {
+            let ports = it.new_array(vec![]);
+            o.set_prop("ports", ports);
+        }
+    }
 }
 
 /// `new Event(type, init)` and friends.
@@ -163,6 +179,7 @@ pub fn new_event(it: &mut Interp, ty: &str, init: &Value, kind: &str) -> R<Value
         if kind == "CustomEvent" && dst.get_own("detail").is_none() {
             dst.set_prop("detail", Value::Null);
         }
+        apply_defaults(it, kind, dst);
     }
     Ok(ev)
 }

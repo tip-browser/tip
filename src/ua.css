@@ -79,5 +79,6 @@ legend { padding-inline: 2px; }
 progress, meter { display: inline-block; width: 10em; height: 1em; background-color: #e6e6e6; border-radius: 3px; }
 label { cursor: default; }
 iframe { display: inline-block; border: 2px inset #ccc; width: 300px; height: 150px; }
+iframe[frameborder="0"], iframe[frameborder="no" i] { border: none; }
 svg { display: inline-block; }
 canvas, video, audio, object, embed { display: inline-block; }

@@ -271,7 +271,12 @@ fn activate(it: &mut Interp, target: NodeId, mods: Mods) {
                         h.nav = Some(NavRequest::SameDocument { url, replace: false });
                     } else {
                         let headers = h.request_headers("GET", &url);
-                        h.nav = Some(NavRequest::Load { url, method: "GET".into(), body: None, replace: false, headers });
+                        let load = NavRequest::Load { url, method: "GET".into(), body: None, replace: false, headers };
+                        // target=_top / _parent inside a frame navigates the window above
+                        h.nav = Some(match target_attr.to_ascii_lowercase().as_str() {
+                            "_top" | "_parent" if h.parent.is_some() => NavRequest::Up { nav: Box::new(load), top: target_attr.eq_ignore_ascii_case("_top") },
+                            _ => load,
+                        });
                     }
                 }
                 return;
@@ -374,6 +379,9 @@ impl Page {
 
     /// Mouse moved to viewport coordinates (x, y). Returns true if a repaint is needed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        if self.host().select_popup.is_none() && self.frame_mouse_move(x, y) {
+            return true;
+        }
         let sc = self.host().scroll;
         // open dropdown: track the hovered option
         if let Some(row) = self.host_mut().popup_row_at(x + sc.0, y + sc.1) {
@@ -466,6 +474,9 @@ impl Page {
     /// Mouse button pressed; `count` is the click count (2 = double click).
     pub fn mouse_down_n(&mut self, x: f32, y: f32, button: i32, mods: Mods, count: i32) {
         self.host_mut().keyboard_modality = false;
+        if self.host().select_popup.is_none() && self.frame_mouse_down(x, y, button, mods, count) {
+            return;
+        }
         let sc = self.host().scroll;
         if let Some(row) = self.host_mut().popup_row_at(x + sc.0, y + sc.1) {
             if row.is_none() {
@@ -646,6 +657,9 @@ impl Page {
     }
 
     pub fn mouse_up(&mut self, x: f32, y: f32, button: i32, mods: Mods, click_count: i32) {
+        if self.frame_mouse_up(x, y, button, mods, click_count) {
+            return;
+        }
         let sc = self.host().scroll;
         if let Some(row) = self.host_mut().popup_row_at(x + sc.0, y + sc.1) {
             if let Some(i) = row {
@@ -732,6 +746,11 @@ impl Page {
 
     /// Scroll wheel; returns true if something scrolled.
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) -> bool {
+        if self.host().select_popup.is_none() {
+            if let Some(true) = self.frame_wheel(x, y, dx, dy) {
+                return true;
+            }
+        }
         let sc0 = self.host().scroll;
         if let Some(Some(_)) = self.host_mut().popup_row_at(x + sc0.0, y + sc0.1) {
             let h = self.host_mut();
@@ -793,6 +812,11 @@ impl Page {
 
     /// Key pressed. `text` is the character(s) produced, if any.
     pub fn key_down(&mut self, key: &str, text: Option<&str>, mods: Mods) {
+        if let Some(f) = self.focused_frame() {
+            if self.with_frame(f, |p| p.key_down(key, text, mods)).is_some() {
+                return;
+            }
+        }
         // a plain key press makes focus visible again (shortcuts with Cmd/Ctrl/Alt don't)
         if !mods.meta && !mods.ctrl && !mods.alt && !matches!(key, "Shift" | "Control" | "Alt" | "Meta" | "CapsLock") {
             let h = self.host_mut();

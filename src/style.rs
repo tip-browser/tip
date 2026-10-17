@@ -903,6 +903,21 @@ pub fn compute_styles(ctx: &StyleContext) -> Styles {
             }
         }
     }
+    // CSS Overflow: when the root element's overflow is visible, the body's overflow applies
+    // to the viewport instead, and the body itself does not clip
+    if let (Some(html), Some(body)) = (ctx.doc.children(0).iter().copied().find(|&n| ctx.doc.tag_is(n, "html")), ctx.doc.body()) {
+        let root_visible = styles.map.get(&html).is_some_and(|s| s.overflow_x == Overflow::Visible && s.overflow_y == Overflow::Visible);
+        if root_visible {
+            if let Some(bs) = styles.map.get_mut(&body) {
+                if bs.overflow_x != Overflow::Visible || bs.overflow_y != Overflow::Visible {
+                    let mut b = (**bs).clone();
+                    b.overflow_x = Overflow::Visible;
+                    b.overflow_y = Overflow::Visible;
+                    *bs = Rc::new(b);
+                }
+            }
+        }
+    }
     styles
 }
 

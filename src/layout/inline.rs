@@ -101,6 +101,8 @@ struct Collector<'a, 'b> {
     items: Vec<Item>,
     prev_space: bool,
     avail_w: f32,
+    /// The block's definite height, for percentage heights of atomic inlines.
+    cb_h: Option<f32>,
 }
 
 impl Collector<'_, '_> {
@@ -253,7 +255,7 @@ impl Collector<'_, '_> {
                     }
                     _ => {
                         // atomic inline-level box
-                        let a = Avail { cb_w: self.avail_w, cb_h: None, mode: WidthMode::Shrink, forced_h: None, bfc: true };
+                        let a = Avail { cb_w: self.avail_w, cb_h: self.cb_h, mode: WidthMode::Shrink, forced_h: None, bfc: true };
                         block::layout_box(c, self.st, 0.0, 0.0, &a);
                         let mb = c.margin_box();
                         let base = if let Inner::Replaced(super::Replaced::TextInput | super::Replaced::Button(_) | super::Replaced::Select) = &c.inner {
@@ -302,14 +304,14 @@ fn valign_shift(s: &ComputedStyle) -> f32 {
 }
 
 /// Lay out inline content of `b`; returns content height.
-pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State) -> f32 {
+pub(crate) fn layout_inline(b: &mut LayoutBox, st: &mut State, cb_h: Option<f32>) -> f32 {
     let root_style = b.style.clone();
     let cx = b.content.x;
     let cw = b.content.w;
     let top = b.content.y;
     let mut children = std::mem::take(&mut b.children);
     let items = {
-        let mut col = Collector { st, items: Vec::new(), prev_space: true, avail_w: cw };
+        let mut col = Collector { st, items: Vec::new(), prev_space: true, avail_w: cw, cb_h };
         col.collect(&mut children, &mut Vec::new());
         col.items
     };

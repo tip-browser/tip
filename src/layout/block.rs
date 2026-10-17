@@ -276,7 +276,7 @@ fn layout_box_uncached(b: &mut LayoutBox, st: &mut State, x: f32, y: f32, a: &Av
         Inner::Table => table::layout_table(b, st, def_h),
         _ => {
             if has_inline_content(b) {
-                inline::layout_inline(b, st)
+                inline::layout_inline(b, st, def_h)
             } else {
                 layout_flow_children(b, st, def_h, bfc)
             }

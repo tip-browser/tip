@@ -26,11 +26,10 @@ pub fn screenshot(page: &mut Page, full_page: bool, scale: f32) -> Canvas {
     // painting requests CSS background images; give them a moment to arrive
     let mut dl = page.host_mut().display_list();
     let deadline = Instant::now() + Duration::from_millis(3000);
-    if page.host().images_pending() {
-        while page.host().images_pending() && Instant::now() < deadline {
-            if !page.host_mut().poll_images() {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+    // painting a frame can request more images (in the frame), so repeat until settled
+    while page.host().images_pending_deep() && Instant::now() < deadline {
+        if !page.host_mut().poll_images_deep() {
+            std::thread::sleep(Duration::from_millis(5));
         }
         dl = page.host_mut().display_list();
     }
@@ -377,11 +376,54 @@ fn install_page_api(it: &mut Interp) {
         };
         page_eval(it, &code)
     });
+    it.define_method(&page, "frameEvaluate", 2, |it, _, args| {
+        // evaluate an expression inside the i-th iframe's document (JSON-serialisable result)
+        let i = it.to_number(&arg(args, 0))? as usize;
+        let code = it.to_str(&arg(args, 1))?.to_string();
+        let wrapped = format!("JSON.stringify((function(){{ return eval({}); }})())", crate::js::builtins::json::quote(&code));
+        let out = {
+            let page = &mut th(it).tab.page;
+            let Some(f) = page.host_mut().frames.get_mut(i) else { throw!(it, "Error", "page.frameEvaluate: no frame {i}") };
+            let Some(child) = f.page.as_mut() else { throw!(it, "Error", "page.frameEvaluate: frame {i} has not loaded") };
+            let r = child.interp.eval_script(&wrapped, "page.frameEvaluate");
+            child.after_task();
+            match r {
+                Ok(Value::Str(s)) => Ok(s.to_string()),
+                Ok(_) => Ok("null".to_string()),
+                Err(e) => Err(child.interp.describe_error(&e)),
+            }
+        };
+        match out {
+            Ok(s) => crate::js::builtins::json::parse(it, &s),
+            Err(msg) => throw!(it, "Error", "page.frameEvaluate failed: {msg}"),
+        }
+    });
     it.define_method(&page, "waitFor", 2, |it, _, args| {
         let s = it.to_str(&arg(args, 0))?.to_string();
         let timeout = if arg(args, 1).is_undefined() { 5000.0 } else { it.to_number(&arg(args, 1))? };
         wait_for_selector(it, &s, timeout)?;
         Ok(Value::Undefined)
+    });
+    it.define_method(&page, "waitForFunction", 2, |it, _, args| {
+        // poll a JavaScript expression in the page until it is truthy
+        let src = it.to_str(&arg(args, 0))?.to_string();
+        let timeout = if arg(args, 1).is_undefined() { 5000.0 } else { it.to_number(&arg(args, 1))? };
+        let ok = pump_until(&mut th(it).tab, Duration::from_millis(timeout as u64), |t| t.page.interp.eval_script(&src, "waitForFunction").is_ok_and(|v| v.truthy()));
+        if !ok {
+            throw!(it, "Error", "Timed out after {timeout}ms waiting for {src:?}");
+        }
+        Ok(Value::Undefined)
+    });
+    it.define_method(&page, "pixel", 2, |it, _, args| {
+        // colour of a viewport pixel as "rgb(r, g, b)" (CSS pixels, rendered at scale 1)
+        let x = it.to_number(&arg(args, 0))?.max(0.0) as usize;
+        let y = it.to_number(&arg(args, 1))?.max(0.0) as usize;
+        let c = screenshot(&mut th(it).tab.page, false, 1.0);
+        if x >= c.w || y >= c.h {
+            return Ok(Value::Null);
+        }
+        let p = c.px[y * c.w + x];
+        Ok(Value::str(&format!("rgb({}, {}, {})", (p >> 16) & 255, (p >> 8) & 255, p & 255)))
     });
     it.define_method(&page, "waitForText", 3, |it, _, args| {
         let s = it.to_str(&arg(args, 0))?.to_string();
@@ -432,6 +474,23 @@ fn install_page_api(it: &mut Interp) {
                 let o = it.new_object();
                 o.set_prop("level", Value::str(e.level));
                 o.set_prop("text", Value::str(&e.text));
+                Value::Obj(o)
+            })
+            .collect();
+        Ok(it.new_array(items))
+    });
+    it.define_method(&page, "requests", 0, |it, _, _| {
+        // the page's network log: [{ url, method, kind, status, error }]
+        let entries: Vec<(String, String, &'static str, u16, Option<String>)> = th(it).tab.page.host().net_log.iter().map(|e| (e.url.clone(), e.method.clone(), e.kind, e.status, e.error.clone())).collect();
+        let items: Vec<Value> = entries
+            .into_iter()
+            .map(|(url, method, kind, status, error)| {
+                let o = it.new_object();
+                o.set_prop("url", Value::str(&url));
+                o.set_prop("method", Value::str(&method));
+                o.set_prop("kind", Value::str(kind));
+                o.set_prop("status", Value::Num(status as f64));
+                o.set_prop("error", error.map(|e| Value::str(&e)).unwrap_or(Value::Null));
                 Value::Obj(o)
             })
             .collect();
