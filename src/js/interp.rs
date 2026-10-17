@@ -28,7 +28,7 @@ pub struct FuncScope {
 }
 
 pub struct Scope {
-    pub vars: RefCell<HashMap<JsStr, Binding>>,
+    pub vars: RefCell<super::fxhash::FxHashMap<JsStr, Binding>>,
     pub parent: Option<Env>,
     pub func: Option<FuncScope>,
 }
@@ -37,10 +37,10 @@ pub type Env = Rc<Scope>;
 
 impl Scope {
     pub fn new(parent: Option<Env>) -> Env {
-        Rc::new(Scope { vars: RefCell::new(HashMap::new()), parent, func: None })
+        Rc::new(Scope { vars: RefCell::new(Default::default()), parent, func: None })
     }
     pub fn new_func(parent: Option<Env>, fs: FuncScope) -> Env {
-        Rc::new(Scope { vars: RefCell::new(HashMap::new()), parent, func: Some(fs) })
+        Rc::new(Scope { vars: RefCell::new(Default::default()), parent, func: Some(fs) })
     }
     pub fn declare(&self, name: JsStr, value: Value, mutable: bool) {
         self.vars.borrow_mut().insert(name, Binding { value, mutable, link: None });

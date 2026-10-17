@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod builtins;
 pub mod coro;
+pub mod fxhash;
 pub mod interp;
 pub mod lexer;
 pub mod module;

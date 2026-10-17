@@ -184,7 +184,7 @@ impl Prop {
 #[derive(Default)]
 pub struct PropMap {
     entries: Vec<Option<(PropKey, Prop)>>,
-    index: HashMap<PropKey, usize>,
+    index: super::fxhash::FxHashMap<PropKey, usize>,
     dead: usize,
 }
 
