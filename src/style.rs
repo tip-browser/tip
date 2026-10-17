@@ -10,11 +10,52 @@ pub const UA_CSS: &str = include_str!("ua.css");
 
 // ---------------------------------------------------------------- value types
 
-/// A length that may depend on the containing block: `px + pct% of base`.
+/// A length that may depend on the containing block: `px + pct% of base`, or a
+/// `min()`/`max()`/`clamp()` of such lengths (interned, see `LenExpr`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Len {
     Auto,
     Val(f32, f32),
+    Expr(u32),
+}
+
+/// Comparison functions whose arguments mix units, evaluated once the base is known.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LenExpr {
+    Min(Vec<Len>),
+    Max(Vec<Len>),
+    Clamp(Len, Len, Len),
+}
+
+fn len_exprs() -> std::sync::MutexGuard<'static, Vec<LenExpr>> {
+    static E: std::sync::OnceLock<std::sync::Mutex<Vec<LenExpr>>> = std::sync::OnceLock::new();
+    E.get_or_init(|| std::sync::Mutex::new(Vec::new())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl LenExpr {
+    fn intern(self) -> Len {
+        let mut all = len_exprs();
+        if let Some(i) = all.iter().position(|e| *e == self) {
+            return Len::Expr(i as u32);
+        }
+        all.push(self);
+        Len::Expr(all.len() as u32 - 1)
+    }
+
+    fn get(i: u32) -> Option<LenExpr> {
+        len_exprs().get(i as usize).cloned()
+    }
+
+    fn eval(&self, f: &dyn Fn(&Len) -> Option<f32>) -> Option<f32> {
+        match self {
+            LenExpr::Min(a) => a.iter().map(f).collect::<Option<Vec<f32>>>()?.into_iter().reduce(f32::min),
+            LenExpr::Max(a) => a.iter().map(f).collect::<Option<Vec<f32>>>()?.into_iter().reduce(f32::max),
+            LenExpr::Clamp(lo, v, hi) => {
+                let (lo, v, hi) = (f(lo)?, f(v)?, f(hi)?);
+                Some(v.min(hi).max(lo))
+            }
+        }
+    }
 }
 
 impl Len {
@@ -33,6 +74,7 @@ impl Len {
         match *self {
             Len::Auto => None,
             Len::Val(px, pct) => Some(px + pct * base / 100.0),
+            Len::Expr(i) => LenExpr::get(i)?.eval(&|l| l.resolve(base)),
         }
     }
     /// Resolve where an indefinite base makes percentages behave as auto.
@@ -46,6 +88,7 @@ impl Len {
                     base.map(|b| px + pct * b / 100.0)
                 }
             }
+            Len::Expr(i) => LenExpr::get(i)?.eval(&|l| l.resolve_opt(base)),
         }
     }
     pub fn or_zero(&self, base: f32) -> f32 {
@@ -57,6 +100,12 @@ impl Len {
             Len::Val(px, 0.0) => format!("{}px", css::fmt_num(px)),
             Len::Val(0.0, pct) => format!("{}%", css::fmt_num(pct)),
             Len::Val(px, pct) => format!("calc({}% + {}px)", css::fmt_num(pct), css::fmt_num(px)),
+            Len::Expr(i) => match LenExpr::get(i) {
+                Some(LenExpr::Min(a)) => format!("min({})", a.iter().map(|l| l.to_css()).collect::<Vec<_>>().join(", ")),
+                Some(LenExpr::Max(a)) => format!("max({})", a.iter().map(|l| l.to_css()).collect::<Vec<_>>().join(", ")),
+                Some(LenExpr::Clamp(a, b, c)) => format!("clamp({}, {}, {})", a.to_css(), b.to_css(), c.to_css()),
+                None => "auto".into(),
+            },
         }
     }
 }
@@ -284,6 +333,8 @@ pub enum Track {
     Pct(f32),
     Fr(f32),
     Auto,
+    MinContent,
+    MaxContent,
     MinMax(Box<Track>, Box<Track>),
 }
 
@@ -1222,7 +1273,13 @@ fn length(c: &[Tok], cx: &Ctx) -> Option<Len> {
             match f.as_str() {
                 "calc" | "-webkit-calc" => calc(inner, cx),
                 "min" | "max" | "clamp" => {
-                    let args: Vec<Len> = split_args(inner).iter().filter_map(|a| calc(a, cx)).collect();
+                    let args: Vec<Len> = split_args(inner)
+                        .iter()
+                        .map(|a| {
+                            let a: Vec<Tok> = a.iter().filter(|t| **t != Tok::Ws).cloned().collect();
+                            length(&a, cx).filter(|l| !l.is_auto()).or_else(|| calc(&a, cx))
+                        })
+                        .collect::<Option<Vec<Len>>>()?;
                     pick_minmax(f, &args)
                 }
                 "var" => None,
@@ -1252,23 +1309,24 @@ fn split_args(toks: &[Tok]) -> Vec<Vec<Tok>> {
 }
 
 fn pick_minmax(f: &str, args: &[Len]) -> Option<Len> {
-    // Without a base we can only compare pure px values; prefer pure-px results when mixing.
+    if args.is_empty() {
+        return None;
+    }
+    // all plain pixels: compute now; otherwise evaluate at layout time
     let pure: Vec<f32> = args.iter().filter_map(|a| if let Len::Val(px, 0.0) = a { Some(*px) } else { None }).collect();
+    let all_pure = pure.len() == args.len();
     match f {
         "clamp" if args.len() == 3 => {
-            if let (Len::Val(lo, 0.0), Len::Val(hi, 0.0)) = (args[0], args[2]) {
-                if let Len::Val(v, 0.0) = args[1] {
-                    return Some(Len::px(v.clamp(lo, hi.max(lo))));
-                }
-                return Some(args[1]);
+            if all_pure {
+                return Some(Len::px(pure[1].min(pure[2]).max(pure[0])));
             }
-            Some(args[1])
+            Some(LenExpr::Clamp(args[0], args[1], args[2]).intern())
         }
-        "min" if pure.len() == args.len() => pure.iter().cloned().reduce(f32::min).map(Len::px),
-        "max" if pure.len() == args.len() => pure.iter().cloned().reduce(f32::max).map(Len::px),
-        "min" => args.iter().find(|a| matches!(a, Len::Val(_, p) if *p != 0.0)).copied().or(args.first().copied()),
-        "max" => pure.iter().cloned().reduce(f32::max).map(Len::px).or(args.first().copied()),
-        _ => args.first().copied(),
+        "min" if all_pure => pure.into_iter().reduce(f32::min).map(Len::px),
+        "max" if all_pure => pure.into_iter().reduce(f32::max).map(Len::px),
+        "min" => Some(LenExpr::Min(args.to_vec()).intern()),
+        "max" => Some(LenExpr::Max(args.to_vec()).intern()),
+        _ => None,
     }
 }
 
@@ -1382,6 +1440,7 @@ fn calc_atom(t: &[Tok], p: &mut usize, cx: &Ctx) -> Option<CalcVal> {
 fn px_value(c: &[Tok], cx: &Ctx) -> Option<f32> {
     match length(c, cx)? {
         Len::Val(px, _) => Some(px),
+        e @ Len::Expr(_) => e.resolve(0.0),
         Len::Auto => None,
     }
 }
@@ -1522,7 +1581,9 @@ fn line_height(c: &[Tok], cx: &Ctx, font_size: f32) -> Option<LineHeight> {
 fn parse_track(c: &[Tok], cx: &Ctx) -> Option<Track> {
     match c {
         [Tok::Dimension(n, u)] if u == "fr" => Some(Track::Fr(*n)),
-        [Tok::Ident(s)] if matches!(s.as_str(), "auto" | "min-content" | "max-content") => Some(Track::Auto),
+        [Tok::Ident(s)] if s == "auto" => Some(Track::Auto),
+        [Tok::Ident(s)] if s == "min-content" => Some(Track::MinContent),
+        [Tok::Ident(s)] if s == "max-content" || s == "fit-content" => Some(Track::MaxContent),
         [Tok::Percentage(p)] => Some(Track::Pct(*p)),
         [Tok::Function(f), rest @ ..] if f == "minmax" => {
             let inner = &rest[..rest.len().saturating_sub(1)];

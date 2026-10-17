@@ -552,7 +552,7 @@ impl PageHost {
     }
 
     fn pump_image_queue(&mut self) {
-        while self.img_inflight < 6 && !self.img_queue.is_empty() {
+        while self.img_inflight < 12 && !self.img_queue.is_empty() {
             let url = self.img_queue.remove(0);
             self.img_inflight += 1;
             let tx = self.img_tx.clone();
@@ -1098,6 +1098,8 @@ impl Page {
 
     /// Load subresources and run scripts.
     pub fn start(&mut self) {
+        // start downloading images right away, in parallel with stylesheets and scripts
+        self.host_mut().sync_images();
         // stylesheets first (render-blocking)
         let _ = self.host_mut().styles();
         if self.host().scripting {

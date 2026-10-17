@@ -16,6 +16,10 @@ use crate::tab::Tab;
 
 pub const CHROME_H: f32 = 76.0;
 const SPLITTER: f32 = 5.0;
+/// Narrowest a tab gets before the strip starts scrolling.
+const MIN_TAB_W: f32 = 96.0;
+const MAX_TAB_W: f32 = 220.0;
+const TABLIST_W: f32 = 380.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
@@ -23,6 +27,16 @@ pub enum Region {
     Content,
     DevTools,
     Splitter,
+    TabList,
+}
+
+/// The "all tabs" panel: a searchable list of every tab.
+struct TabList {
+    page: Page,
+    query: String,
+    /// Tab indices shown, in order.
+    shown: Vec<usize>,
+    key: String,
 }
 
 struct RegionCache {
@@ -52,7 +66,12 @@ pub struct App {
     hover_region: Option<Region>,
     chrome_key: String,
     status: Option<String>,
-    caches: [RegionCache; 3],
+    caches: [RegionCache; 4],
+    /// First tab shown when the strip overflows.
+    tab_first: usize,
+    /// Scroll the strip to the active tab on the next layout (set when it changes).
+    follow_active: bool,
+    tablist: Option<TabList>,
     page_gen: Vec<u64>,
     next_gen: u64,
     last_click: (Instant, f32, f32, i32),
@@ -86,7 +105,10 @@ impl App {
             hover_region: None,
             chrome_key: String::new(),
             status: None,
-            caches: [RegionCache::new(), RegionCache::new(), RegionCache::new()],
+            caches: [RegionCache::new(), RegionCache::new(), RegionCache::new(), RegionCache::new()],
+            tab_first: 0,
+            follow_active: true,
+            tablist: None,
             page_gen: vec![],
             next_gen: 1,
             last_click: (Instant::now(), 0.0, 0.0, 0),
@@ -129,6 +151,7 @@ impl App {
     }
 
     fn bump_gen(&mut self) {
+        self.follow_active = true;
         self.page_gen[self.active] = self.next_gen;
         self.next_gen += 1;
     }
@@ -210,10 +233,11 @@ impl App {
     // ------------------------------------------------------------ chrome UI
 
     fn sync_chrome(&mut self) {
+        let _ = self.tab_window();
         let t = &self.tabs[self.active];
         let url = t.pending.as_ref().map(|p| p.url.to_string()).unwrap_or_else(|| t.url().to_string());
         let shown_url = if url.starts_with("tip://home") { String::new() } else { url.clone() };
-        let mut key = format!("{}|{}|{}|{}|{}|{}", self.active, shown_url, t.can_go_back(), t.can_go_forward(), t.is_loading(), self.devtools.is_some());
+        let mut key = format!("{}|{}|{}|{}|{}|{}|{}|{}|{}", self.active, shown_url, t.can_go_back(), t.can_go_forward(), t.is_loading(), self.devtools.is_some(), self.width, self.tab_first, self.tablist.is_some());
         let titles: Vec<String> = self.tabs.iter().map(|t| if t.is_loading() && t.page.host().url.scheme == "about" { "Loading…".to_string() } else { t.page.title() }).collect();
         for tt in &titles {
             key.push('|');
@@ -223,18 +247,42 @@ impl App {
             return;
         }
         self.chrome_key = key;
+        let (first, count, tab_w) = self.tab_window();
+        self.follow_active = false;
+        let overflow = count < self.tabs.len();
         let mut tabs_html = String::new();
-        for (i, title) in titles.iter().enumerate() {
+        if overflow {
+            tabs_html.push_str(&format!("<div class=\"scroll{}\" data-action=tabscroll data-arg=-1 title=\"Scroll tabs left\">‹</div>", if first == 0 { " off" } else { "" }));
+            if first > 0 {
+                tabs_html.push_str(&format!("<span class=more title=\"{first} more tabs\">{first}</span>"));
+            }
+        }
+        for i in first..first + count {
+            let title = &titles[i];
             let loading = self.tabs[i].is_loading();
             tabs_html.push_str(&format!(
-                "<div class=\"tab{}\" data-action=tab data-arg={i} title=\"{}\">{}<span class=title>{}</span><span class=x data-action=closetab data-arg={i}>×</span></div>",
+                "<div class=\"tab{}\" style=\"width:{}px\" data-action=tab data-arg={i} title=\"{}\">{}<span class=title>{}</span><span class=x data-action=closetab data-arg={i}>×</span></div>",
                 if i == self.active { " active" } else { "" },
+                tab_w.floor(),
                 crate::dom::escape_attr(title),
                 if loading { "<span class=dot></span>" } else { "" },
                 crate::dom::escape_text(title)
             ));
         }
+        if overflow {
+            let after = self.tabs.len() - first - count;
+            if after > 0 {
+                tabs_html.push_str(&format!("<span class=more title=\"{after} more tabs\">{after}</span>"));
+            }
+            tabs_html.push_str(&format!("<div class=\"scroll{}\" data-action=tabscroll data-arg=1 title=\"Scroll tabs right\">›</div>", if after == 0 { " off" } else { "" }));
+        }
         tabs_html.push_str("<div id=newtab data-action=newtab title=\"New tab\">+</div>");
+        tabs_html.push_str("<div id=spacer></div>");
+        tabs_html.push_str(&format!(
+            "<div id=alltabs class=\"{}\" data-action=alltabs title=\"Search tabs ({} open)\"><svg viewBox=\"0 0 24 24\" width=16 height=16 fill=none stroke=currentColor stroke-width=2.2 stroke-linecap=round stroke-linejoin=round style=\"margin-top:6px\"><path d=\"m6 9 6 6 6-6\"/></svg></div>",
+            if self.tablist.is_some() { "on" } else { "" },
+            self.tabs.len()
+        ));
         devtools::set_html(&mut self.chrome, "tabs", &tabs_html);
         let t = &self.tabs[self.active];
         let (back, fwd, loading) = (t.can_go_back(), t.can_go_forward(), t.is_loading());
@@ -263,6 +311,133 @@ impl App {
         }
     }
 
+    /// Which tabs fit in the strip: (first index, count, tab width). Keeps the active tab visible.
+    fn tab_window(&mut self) -> (usize, usize, f32) {
+        let n = self.tabs.len();
+        // left inset (window buttons) + new tab + all-tabs buttons + padding
+        let avail = (self.width - 78.0 - 8.0 - 30.0 - 36.0).max(MIN_TAB_W);
+        let gap = 2.0;
+        let fits = |k: usize, w: f32| k as f32 * (w + gap) <= avail;
+        if fits(n, MIN_TAB_W) {
+            self.tab_first = 0;
+            let w = ((avail / n.max(1) as f32) - gap).clamp(MIN_TAB_W, MAX_TAB_W);
+            return (0, n, w);
+        }
+        // overflow: room for the scroll buttons and the hidden-tab counters
+        let room = avail - 2.0 * 24.0 - 2.0 * 26.0;
+        let count = ((room / (MIN_TAB_W + gap)).floor() as usize).clamp(1, n);
+        let mut first = self.tab_first.min(n - count);
+        if self.follow_active {
+            if self.active < first {
+                first = self.active;
+            } else if self.active >= first + count {
+                first = self.active + 1 - count;
+            }
+        }
+        self.tab_first = first;
+        let w = ((room / count as f32) - gap).clamp(MIN_TAB_W, MAX_TAB_W);
+        (first, count, w)
+    }
+
+    /// Scroll the tab strip by `delta` tabs (without changing the active tab).
+    fn scroll_tabs(&mut self, delta: i64) {
+        let (_, count, _) = self.tab_window();
+        let max_first = self.tabs.len().saturating_sub(count);
+        let first = (self.tab_first as i64 + delta).clamp(0, max_first as i64) as usize;
+        self.follow_active = false;
+        self.tab_first = first;
+    }
+
+    fn tablist_rect(&self) -> Rect {
+        let rows = self.tabs.len().max(1) as f32;
+        let h = (72.0 + rows * 40.0 + 8.0).min((self.height - CHROME_H - 16.0).max(120.0));
+        let w = TABLIST_W.min(self.width - 16.0);
+        Rect::new(self.width - w - 8.0, CHROME_H - 6.0, w, h)
+    }
+
+    pub fn toggle_tablist(&mut self) {
+        if self.tablist.is_some() {
+            self.close_tablist();
+            return;
+        }
+        let r = self.tablist_rect();
+        let opts = LoadOptions { viewport: (r.w, r.h), scale: self.scale, scripting: false, internal: true };
+        let mut page = Page::from_html(crate::pages::TABLIST, Url::parse("tip://tabs").unwrap(), &opts);
+        page.start();
+        let q = page.host().doc.get_element_by_id("q");
+        crate::input::focus(&mut page.interp, q);
+        self.tablist = Some(TabList { page, query: String::new(), shown: vec![], key: String::new() });
+        self.focus = Region::TabList;
+        self.caches[3].key = None;
+        self.sync_tablist();
+    }
+
+    fn handle_tablist_pick(&mut self, i: usize) {
+        self.switch_tab(i);
+        self.close_tablist();
+    }
+
+    fn close_tablist(&mut self) {
+        if self.tablist.take().is_some() {
+            if self.focus == Region::TabList {
+                self.focus = Region::Content;
+            }
+            self.chrome_key.clear();
+        }
+    }
+
+    /// Rebuild the tab list's rows when tabs or the search text change.
+    fn sync_tablist(&mut self) {
+        let r = self.tablist_rect();
+        let scale = self.scale;
+        let active = self.active;
+        let items: Vec<(String, String, bool)> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let url = t.pending.as_ref().map(|p| p.url.to_string()).unwrap_or_else(|| t.url().to_string());
+                (t.page.title(), url, t.is_loading())
+            })
+            .collect();
+        let Some(tl) = &mut self.tablist else { return };
+        let q = tl.page.host().doc.get_element_by_id("q").map(|n| tl.page.host().control_value(n)).unwrap_or_default();
+        tl.query = q.to_lowercase();
+        let shown: Vec<usize> = (0..items.len())
+            .filter(|&i| {
+                let (t, u, _) = &items[i];
+                tl.query.is_empty() || t.to_lowercase().contains(&tl.query) || u.to_lowercase().contains(&tl.query)
+            })
+            .collect();
+        let key = format!("{active}|{}|{:?}|{:?}", tl.query, shown, items);
+        if key == tl.key {
+            return;
+        }
+        tl.key = key;
+        let mut html = String::new();
+        for &i in &shown {
+            let (t, u, loading) = &items[i];
+            let title = if t.is_empty() { u.as_str() } else { t.as_str() };
+            let shown_url = u.trim_start_matches("https://").trim_start_matches("http://");
+            html.push_str(&format!(
+                "<div class=\"row{}\" data-action=tab data-arg={i}>{}<span class=text><span class=t>{}</span><span class=u>{}</span></span><span class=x data-action=closetab data-arg={i} title=\"Close tab\">×</span></div>",
+                if i == active { " active" } else { "" },
+                if *loading { "<span class=dot></span>" } else { "" },
+                crate::dom::escape_text(title),
+                crate::dom::escape_text(shown_url)
+            ));
+        }
+        if shown.is_empty() {
+            html.push_str("<div class=empty>No tabs match</div>");
+        }
+        devtools::set_html(&mut tl.page, "list", &html);
+        let count = if tl.query.is_empty() { format!("{} open tabs", items.len()) } else { format!("{} of {} tabs", shown.len(), items.len()) };
+        if let Some(c) = tl.page.host().doc.get_element_by_id("count") {
+            tl.page.host_mut().doc.set_text_content(c, &count);
+        }
+        tl.shown = shown;
+        tl.page.set_viewport(r.w, r.h, scale);
+    }
+
     fn handle_chrome_msg(&mut self, msg: HostMsg) {
         match msg {
             HostMsg::Action { action, arg, .. } => match action.as_str() {
@@ -272,6 +447,12 @@ impl App {
                 "stop" => self.tab().pending = None,
                 "home" => self.navigate("tip://home"),
                 "devtools" => self.toggle_devtools(),
+                "alltabs" => self.toggle_tablist(),
+                "tabscroll" => {
+                    if let Ok(d) = arg.parse::<i64>() {
+                        self.scroll_tabs(d)
+                    }
+                }
                 "newtab" => {
                     self.new_tab("tip://home");
                     self.focus_address();
@@ -341,6 +522,38 @@ impl App {
             changed = true;
         }
         self.chrome.poll();
+        // tab list panel
+        if self.tablist.is_some() {
+            let msgs: Vec<HostMsg> = std::mem::take(&mut self.tablist.as_mut().unwrap().page.host_mut().outbox);
+            for m in msgs {
+                match m {
+                    HostMsg::Action { action, arg, .. } if action == "tab" => {
+                        if let Ok(i) = arg.parse() {
+                            self.handle_tablist_pick(i);
+                        }
+                    }
+                    HostMsg::Action { action, arg, .. } if action == "closetab" => {
+                        if let Ok(i) = arg.parse() {
+                            self.close_tab(i);
+                        }
+                    }
+                    HostMsg::Submit { .. } => {
+                        // Enter: switch to the first match
+                        let first = self.tablist.as_ref().and_then(|t| t.shown.first().copied());
+                        if let Some(i) = first {
+                            self.switch_tab(i);
+                        }
+                        self.close_tablist();
+                    }
+                    _ => {}
+                }
+                changed = true;
+            }
+            if let Some(tl) = &mut self.tablist {
+                tl.page.poll();
+            }
+            self.sync_tablist();
+        }
         // devtools
         if self.devtools.is_some() {
             let msgs: Vec<HostMsg> = std::mem::take(&mut self.devtools.as_mut().unwrap().page.host_mut().outbox);
@@ -392,6 +605,9 @@ impl App {
     }
 
     fn region_at(&self, x: f32, y: f32) -> Region {
+        if self.tablist.is_some() && self.tablist_rect().contains(x, y) {
+            return Region::TabList;
+        }
         if y < CHROME_H {
             return Region::Chrome;
         }
@@ -415,6 +631,10 @@ impl App {
                 let d = self.devtools_rect();
                 (x - d.x - SPLITTER, y - d.y)
             }
+            Region::TabList => {
+                let r = self.tablist_rect();
+                (x - r.x, y - r.y)
+            }
         }
     }
 
@@ -423,6 +643,7 @@ impl App {
             Region::Chrome => Some(&mut self.chrome),
             Region::Content => Some(&mut self.tabs[self.active].page),
             Region::DevTools => self.devtools.as_mut().map(|d| &mut d.page),
+            Region::TabList => self.tablist.as_mut().map(|t| &mut t.page),
             Region::Splitter => None,
         }
     }
@@ -488,6 +709,16 @@ impl App {
         let count = if now.duration_since(t).as_millis() < 450 && (px - x).abs() < 5.0 && (py - y).abs() < 5.0 { n + 1 } else { 1 };
         self.last_click = (now, x, y, count);
         let r = self.region_at(x, y);
+        if self.tablist.is_some() && r != Region::TabList {
+            let on_toggle = r == Region::Chrome && self.chrome_action_at(x, y).as_deref() == Some("alltabs");
+            self.close_tablist();
+            if !on_toggle {
+                return;
+            }
+            // the toggle button closes it; don't reopen on the same click
+            self.capture = None;
+            return;
+        }
         self.capture = Some(r);
         if r == Region::Splitter {
             return;
@@ -512,8 +743,22 @@ impl App {
         }
     }
 
+    /// The data-action of the chrome UI element at (x, y), if any.
+    fn chrome_action_at(&mut self, x: f32, y: f32) -> Option<String> {
+        let n = self.chrome.host_mut().hit_test(x, y)?;
+        let h = self.chrome.host();
+        let mut cur = Some(n);
+        while let Some(c) = cur {
+            if let Some(a) = h.doc.attr(c, "data-action") {
+                return Some(a.to_string());
+            }
+            cur = h.doc.parent(c);
+        }
+        None
+    }
+
     pub fn mouse_up(&mut self, x: f32, y: f32, button: i32, mods: Mods) {
-        let r = self.capture.take().unwrap_or_else(|| self.region_at(x, y));
+        let Some(r) = self.capture.take() else { return };
         if r == Region::Splitter {
             return;
         }
@@ -552,6 +797,14 @@ impl App {
 
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
         let r = self.region_at(x, y);
+        if r == Region::Chrome && y < 36.0 {
+            // wheel over the tab strip scrolls through tabs
+            let d = if dx.abs() > dy.abs() { dx } else { dy };
+            if d.abs() >= 1.0 {
+                self.scroll_tabs(if d > 0.0 { 1 } else { -1 });
+            }
+            return;
+        }
         let (lx, ly) = self.local(r, x, y);
         let z = if r == Region::Content { self.zoom } else { 1.0 };
         if let Some(p) = self.page_for(r) {
@@ -563,6 +816,17 @@ impl App {
     pub fn key_down(&mut self, key: &str, text: Option<&str>, mods: Mods) -> bool {
         let cmd = if cfg!(target_os = "macos") { mods.meta } else { mods.ctrl };
         let lower = key.to_ascii_lowercase();
+        if self.tablist.is_some() && key == "Escape" {
+            self.close_tablist();
+            return true;
+        }
+        if self.tablist.is_some() && (key == "ArrowDown" || key == "ArrowUp") {
+            return true;
+        }
+        if cmd && mods.shift && lower == "a" {
+            self.toggle_tablist();
+            return true;
+        }
         if key == "F12" || (cmd && mods.alt && lower == "i") {
             self.toggle_devtools();
             return true;
@@ -654,6 +918,7 @@ impl App {
             Some(Region::DevTools) => self.devtools.as_ref().map(|d| d.page.cursor()).unwrap_or(Cursor::Default),
             Some(Region::Content) if self.picking => Cursor::Crosshair,
             Some(Region::Content) => self.tabs[self.active].page.cursor(),
+            Some(Region::TabList) => self.tablist.as_ref().map(|t| t.page.cursor()).unwrap_or(Cursor::Default),
             None => Cursor::Default,
         }
     }
@@ -683,6 +948,13 @@ impl App {
         if let Some(dt) = &mut self.devtools {
             let dl = dt.page.host_mut().display_list();
             if self.caches[2].key != Some(Self::region_key(&dl, &dt.page, size(d), 0)) {
+                return true;
+            }
+        }
+        let tr = self.tablist_rect();
+        if let Some(tl) = &mut self.tablist {
+            let dl = tl.page.host_mut().display_list();
+            if self.caches[3].key != Some(Self::region_key(&dl, &tl.page, size(tr), 0)) {
                 return true;
             }
         }
@@ -741,6 +1013,16 @@ impl App {
             Self::render_region(&mut self.caches[2], &mut dt.page, dw, ch, s, 0);
             Self::blit(&mut self.canvas, &self.caches[2].canvas, ox + sw, chrome_h);
         }
+        // the all-tabs panel floats over everything
+        if self.tablist.is_some() {
+            let r = self.tablist_rect();
+            let dev = Rect::new(r.x * s, r.y * s, r.w * s, r.h * s);
+            self.canvas.fill_path_blurred(&crate::raster::rounded_rect_path(dev.translate(0.0, 4.0 * s), [8.0 * s; 4]), Color::rgba(0, 0, 0, 70), 10.0 * s);
+            let (w, h) = (dev.w.round() as usize, dev.h.round() as usize);
+            let tl = self.tablist.as_mut().unwrap();
+            Self::render_region(&mut self.caches[3], &mut tl.page, w, h, s, 0);
+            Self::blit(&mut self.canvas, &self.caches[3].canvas, dev.x.round() as usize, dev.y.round() as usize);
+        }
         // status bubble for hovered links
         if let Some(st) = &self.status {
             let text: String = st.chars().take(120).collect();
@@ -768,5 +1050,54 @@ pub fn run(url: &str) -> i32 {
     {
         eprintln!("Tip's windowed mode supports macOS and Windows. Use `tip render {url} -o out.png` for headless rendering.");
         2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_with_tabs(n: usize) -> App {
+        let mut app = App::new("tip://home", 1280.0, 800.0, 1.0);
+        for _ in 1..n {
+            app.new_tab("tip://home");
+        }
+        app.tick();
+        app
+    }
+
+    #[test]
+    fn tab_strip_scrolls_and_lists_all_tabs() {
+        let mut app = app_with_tabs(30);
+        let (first, count, w) = app.tab_window();
+        assert!(count < 30 && count >= 5, "visible {count}");
+        assert!(first + count == 30, "the new active tab is in view");
+        assert!(w >= MIN_TAB_W);
+        // scrolling moves the window without changing the active tab
+        app.scroll_tabs(-100);
+        app.tick();
+        assert_eq!(app.tab_window().0, 0);
+        assert_eq!(app.active, 29);
+        // the list panel shows every tab and switches on click
+        app.toggle_tablist();
+        app.tick();
+        assert_eq!(app.tablist.as_ref().unwrap().shown.len(), 30);
+        if let Ok(path) = std::env::var("TIP_APP_SNAPSHOT") {
+            let c = app.render();
+            let png = crate::image::png::encode_rgb(c.w as u32, c.h as u32, &c.to_rgb());
+            std::fs::write(path, png).unwrap();
+        }
+        app.handle_tablist_pick(3);
+        assert_eq!(app.active, 3);
+        assert!(app.tablist.is_none());
+        let (first, count, _) = app.tab_window();
+        assert!(first <= 3 && 3 < first + count);
+    }
+
+    #[test]
+    fn few_tabs_do_not_scroll() {
+        let mut app = app_with_tabs(4);
+        assert_eq!(app.tab_window().0, 0);
+        assert_eq!(app.tab_window().1, 4);
     }
 }

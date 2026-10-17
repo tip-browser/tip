@@ -2,6 +2,7 @@
 
 pub const HOME: &str = include_str!("pages/home.html");
 pub const CHROME: &str = include_str!("pages/chrome.html");
+pub const TABLIST: &str = include_str!("pages/tablist.html");
 pub const DEVTOOLS: &str = include_str!("pages/devtools.html");
 
 pub fn about(path: &str) -> String {

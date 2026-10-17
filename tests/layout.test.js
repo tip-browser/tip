@@ -83,3 +83,19 @@ describe('flex sizing', () => {
     page.setViewport(1024, 768);
   });
 });
+
+describe('dialog sizing', () => {
+  test('min() with mixed units resolves against the containing block', () => {
+    page.setContent('<body style="margin:0"><div style="display:grid;place-items:center;width:1000px;height:400px"><div id=p style="width:min(460px, 100%);box-sizing:border-box">x</div></div><div style="width:300px"><div id=q style="width:min(460px, 100%)">y</div></div></body>');
+    expect(page.box('#p').width).toBe(460);
+    expect(page.box('#p').x).toBe(270);
+    expect(page.box('#q').width).toBe(300);
+  });
+
+  test('max-content tracks get their content width next to fr tracks', () => {
+    page.setContent('<dl id=d style="display:grid;grid-template-columns:minmax(0, max-content) minmax(0, 1fr);gap:0 16px;width:400px;margin:0;font:14px sans-serif"><dt id=a>Assembly and Test</dt><dd id=b style="margin:0">1.0</dd></dl>');
+    const a = page.box('#a'), b = page.box('#b');
+    expect(a.width > 50).toBe(true);
+    expect(b.x).toBe(a.x + a.width + 16);
+  });
+});

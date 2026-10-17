@@ -50,6 +50,14 @@ fn size_tracks(tracks: &[Track], avail: Option<f32>, gap: f32, content: &[(f32, 
                 base[i] = cmax;
                 growable[i] = true;
             }
+            Track::MinContent => {
+                base[i] = cmin;
+                limit[i] = cmin;
+            }
+            Track::MaxContent => {
+                base[i] = cmax;
+                limit[i] = cmax;
+            }
             Track::Fr(f) => {
                 base[i] = cmin;
                 fr[i] = *f;
@@ -58,15 +66,19 @@ fn size_tracks(tracks: &[Track], avail: Option<f32>, gap: f32, content: &[(f32, 
                 base[i] = match **a {
                     Track::Px(p) => p,
                     Track::Pct(p) => avail.map(|x| x * p / 100.0).unwrap_or(0.0),
+                    Track::MaxContent => cmax,
                     _ => cmin,
                 };
                 match **b {
                     Track::Fr(f) => fr[i] = f,
                     Track::Px(p) => limit[i] = p.max(base[i]),
+                    Track::Pct(p) => limit[i] = avail.map(|x| x * p / 100.0).unwrap_or(cmax).max(base[i]),
                     Track::Auto => {
                         limit[i] = cmax.max(base[i]);
                         growable[i] = true
                     }
+                    Track::MaxContent => limit[i] = cmax.max(base[i]),
+                    Track::MinContent => limit[i] = cmin.max(base[i]),
                     _ => {}
                 }
             }
@@ -77,6 +89,20 @@ fn size_tracks(tracks: &[Track], avail: Option<f32>, gap: f32, content: &[(f32, 
     let fixed_sum: f32 = (0..n).filter(|&i| fr[i] == 0.0).map(|i| base[i]).sum();
     let sum_fr: f32 = fr.iter().sum();
     if sum_fr > 0.0 {
+        // content-sized tracks grow toward their limits before flexible tracks take the rest
+        let mut base = base;
+        let mut free = avail - gaps - fixed_sum - (0..n).filter(|&i| fr[i] > 0.0).map(|i| base[i]).sum::<f32>();
+        for i in 0..n {
+            if free <= 0.0 {
+                break;
+            }
+            if fr[i] == 0.0 && limit[i].is_finite() && limit[i] > base[i] {
+                let add = (limit[i] - base[i]).min(free);
+                base[i] += add;
+                free -= add;
+            }
+        }
+        let fixed_sum: f32 = (0..n).filter(|&i| fr[i] == 0.0).map(|i| base[i]).sum();
         let mut leftover = avail - gaps - fixed_sum;
         let mut active: Vec<usize> = (0..n).filter(|&i| fr[i] > 0.0).collect();
         let mut out = base.clone();

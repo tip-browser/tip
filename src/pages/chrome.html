@@ -14,8 +14,17 @@
   .tab .x { width: 18px; height: 18px; border-radius: 9px; text-align: center; line-height: 18px; color: #6b7280; font-size: 14px; }
   .tab .x:hover { background: #d1d5db; color: #111827; }
   .tab .dot { width: 8px; height: 8px; border-radius: 4px; background: #6366f1; }
-  #newtab { width: 28px; height: 28px; margin-bottom: 1px; border-radius: 8px; text-align: center; line-height: 28px; font-size: 18px; color: #4b5563; }
+  #newtab { width: 28px; height: 28px; margin-bottom: 1px; border-radius: 8px; text-align: center; line-height: 28px; font-size: 18px; color: #4b5563; flex: none; }
   #newtab:hover { background: #cfd5df; }
+  .tab { flex: none; }
+  .scroll { width: 22px; height: 28px; margin-bottom: 1px; border-radius: 6px; text-align: center; line-height: 28px; font-size: 16px; color: #4b5563; flex: none; }
+  .scroll:hover { background: #cfd5df; }
+  .scroll.off { color: #b8bec8; }
+  .scroll.off:hover { background: transparent; }
+  .more { margin-left: 2px; padding: 0 5px; border-radius: 8px; background: #cfd5df; font-size: 11px; color: #374151; height: 18px; line-height: 18px; margin-bottom: 6px; flex: none; }
+  #spacer { flex: 1; align-self: stretch; }
+  #alltabs { width: 28px; height: 28px; margin-bottom: 1px; border-radius: 8px; text-align: center; line-height: 26px; font-size: 15px; color: #4b5563; flex: none; }
+  #alltabs:hover, #alltabs.on { background: #cfd5df; }
   #bar { display: flex; align-items: center; gap: 4px; height: 40px; padding: 0 8px; background: #f7f8fa; border-bottom: 1px solid #d5d9e0; }
   .btn { width: 30px; height: 30px; border-radius: 8px; text-align: center; line-height: 30px; font-size: 17px; color: #374151; }
   .btn:hover { background: #e5e7eb; }
