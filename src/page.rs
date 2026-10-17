@@ -146,6 +146,11 @@ pub struct PageHost {
     pub current_script: Option<NodeId>,
     pub pending_fetches: Vec<crate::bindings::window::PendingFetch>,
     pub event_sources: Vec<crate::bindings::window::EventSourceConn>,
+    /// <img> elements whose current image is loading: node -> URL (load/error fire when done).
+    pub img_watch: HashMap<NodeId, String>,
+    /// Last image URL seen per <img>, so changing `src` starts a new load.
+    img_seen: HashMap<NodeId, String>,
+    img_scan_version: u64,
     pub net_log_pending: Vec<(String, String, Instant)>,
     pub mutation_observers: Vec<MutationObs>,
     pub history_len: usize,
@@ -229,6 +234,9 @@ impl PageHost {
             current_script: None,
             pending_fetches: vec![],
             event_sources: vec![],
+            img_watch: HashMap::new(),
+            img_seen: HashMap::new(),
+            img_scan_version: u64::MAX,
             net_log_pending: vec![],
             mutation_observers: vec![],
             history_len: 1,
@@ -586,6 +594,44 @@ impl PageHost {
             self.invalidate();
         }
         changed
+    }
+
+    /// Start loading the image of every <img> (attached or not) whose source changed.
+    pub fn sync_images(&mut self) {
+        if self.doc.version == self.img_scan_version || self.internal {
+            return;
+        }
+        self.img_scan_version = self.doc.version;
+        for n in 0..self.doc.nodes.len() {
+            if self.doc.tag(n) != Some("img") {
+                continue;
+            }
+            let Some(url) = self.image_url_for(n) else { continue };
+            if self.img_seen.get(&n) == Some(&url) {
+                continue;
+            }
+            self.img_seen.insert(n, url.clone());
+            self.img_watch.insert(n, url.clone());
+            self.request_image(url);
+        }
+    }
+
+    /// <img> elements whose load finished since the last call: (node, succeeded).
+    pub fn finished_images(&mut self) -> Vec<(NodeId, bool)> {
+        let mut done = Vec::new();
+        self.img_watch.retain(|&n, url| match self.images.get(url.as_str()) {
+            Some(ImageEntry::Loaded(_)) => {
+                done.push((n, true));
+                false
+            }
+            Some(ImageEntry::Failed) => {
+                done.push((n, false));
+                false
+            }
+            _ => true,
+        });
+        done.sort();
+        done
     }
 
     pub fn images_pending(&self) -> bool {
@@ -1161,6 +1207,7 @@ impl Page {
     /// Run microtasks and collect console output after a task.
     pub fn after_task(&mut self) {
         self.interp.run_microtasks();
+        self.host_mut().sync_images();
         self.notify_mutation_observers();
         let msgs = std::mem::take(&mut self.interp.console);
         let src = self.interp.script_name.clone();
@@ -1249,7 +1296,15 @@ impl Page {
 
     /// Process background work: images, fetches, timers. Returns true if a repaint is needed.
     pub fn poll(&mut self) -> bool {
+        self.host_mut().sync_images();
         let a = self.host_mut().poll_images();
+        let done = self.host_mut().finished_images();
+        for (n, ok) in &done {
+            self.fire_simple(Target::Node(*n), if *ok { "load" } else { "error" }, false);
+        }
+        if !done.is_empty() {
+            self.after_task();
+        }
         let f = crate::bindings::window::poll_fetches(&mut self.interp) | crate::bindings::window::poll_event_sources(&mut self.interp);
         if f {
             self.after_task();
@@ -1260,7 +1315,7 @@ impl Page {
 
     pub fn has_pending_work(&self) -> bool {
         let h = self.host();
-        h.images_pending() || !h.pending_fetches.is_empty()
+        h.images_pending() || !h.pending_fetches.is_empty() || !h.img_watch.is_empty()
     }
 
     fn notify_mutation_observers(&mut self) {

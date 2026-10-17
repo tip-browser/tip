@@ -32,6 +32,17 @@
   byTagName('SVGElement', (t) => ['svg', 'path', 'g', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse', 'use', 'text', 'defs', 'symbol'].includes(t));
   byTagName('SVGSVGElement', (t) => t === 'svg');
 
+  // img.decode() resolves once the image has loaded
+  if (typeof HTMLImageElement === 'function' && HTMLImageElement.prototype && !HTMLImageElement.prototype.decode) {
+    HTMLImageElement.prototype.decode = function decode() {
+      return new Promise((resolve, reject) => {
+        if (this.complete) return this.naturalWidth ? resolve() : reject(new DOMException('The source image cannot be decoded.', 'EncodingError'));
+        this.addEventListener('load', () => resolve(), { once: true });
+        this.addEventListener('error', () => reject(new DOMException('The source image cannot be decoded.', 'EncodingError')), { once: true });
+      });
+    };
+  }
+
   if (typeof g.Audio !== 'function') {
     define('Audio', function Audio(src) {
       const a = document.createElement('audio');

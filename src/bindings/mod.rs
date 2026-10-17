@@ -483,6 +483,7 @@ impl HostObject for NodeHost {
                 Value::Num(size.map(|(w, hh)| if k == "naturalWidth" { w } else { hh }).unwrap_or(0) as f64)
             }
             "complete" if tag == "img" => {
+                h.sync_images();
                 let url = h.image_url_for(n);
                 Value::Bool(url.is_none_or(|u| !matches!(h.images.get(&u), Some(crate::page::ImageEntry::Loading))))
             }

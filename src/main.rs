@@ -143,6 +143,43 @@ fn run(args: Vec<String>) -> i32 {
             print_console(&tab);
             0
         }
+        "image" => {
+            // decode an image file with the built-in decoders (debugging aid)
+            let pos = positional(&rest);
+            let Some(input) = pos.first() else {
+                eprintln!("usage: tip image FILE [-o out.png]");
+                return 2;
+            };
+            let data = match std::fs::read(input) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("{input}: {e}");
+                    return 1;
+                }
+            };
+            let t0 = std::time::Instant::now();
+            match tip::image::decode(&data) {
+                Ok(img) => {
+                    let ms = t0.elapsed();
+                    // composite over white like a page background
+                    let rgb: Vec<u8> = img.data.chunks(4).flat_map(|p| {
+                        let a = p[3] as u32;
+                        [0, 1, 2].map(|i| ((p[i] as u32 * a + 255 * (255 - a)) / 255) as u8)
+                    }).collect();
+                    let out = opt(&rest, "-o").unwrap_or("image.png");
+                    if let Err(e) = std::fs::write(out, tip::image::png::encode_rgb(img.w, img.h, &rgb)) {
+                        eprintln!("{out}: {e}");
+                        return 1;
+                    }
+                    eprintln!("{input}: {}x{} decoded in {ms:?} -> {out}", img.w, img.h);
+                    0
+                }
+                Err(e) => {
+                    eprintln!("{input}: {e}");
+                    1
+                }
+            }
+        }
         "eval" => {
             let pos = positional(&rest);
             let (Some(url), Some(code)) = (pos.first(), pos.get(1)) else {
@@ -205,7 +242,7 @@ fn run(args: Vec<String>) -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let windowed = args.is_empty() || !matches!(args[0].as_str(), "help" | "--help" | "-h" | "version" | "--version" | "-V" | "render" | "test" | "dump" | "eval" | "js");
+    let windowed = args.is_empty() || !matches!(args[0].as_str(), "help" | "--help" | "-h" | "version" | "--version" | "-V" | "render" | "test" | "dump" | "eval" | "js" | "image");
     if !windowed {
         attach_console();
     }

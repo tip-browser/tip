@@ -1,6 +1,8 @@
 //! Image decoding.
 
 pub mod inflate;
+pub mod gif;
+pub mod jpeg;
 pub mod png;
 
 use crate::raster::Image;
@@ -10,9 +12,9 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     if data.starts_with(b"\x89PNG") {
         png::decode(data)
     } else if data.starts_with(&[0xff, 0xd8]) {
-        Err("JPEG not supported yet".into())
+        jpeg::decode(data)
     } else if data.starts_with(b"GIF8") {
-        Err("GIF not supported yet".into())
+        gif::decode(data)
     } else {
         Err("unknown image format".into())
     }
