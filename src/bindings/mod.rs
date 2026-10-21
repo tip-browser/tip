@@ -1305,8 +1305,18 @@ fn install_node_methods(it: &mut Interp, p: &DomProtos) {
     });
     it.define_method(el, "getClientRects", 0, |it, this, _| {
         let n = this_node(it, &this)?;
-        let r = client_rect(it, n);
-        Ok(it.new_array(vec![r]))
+        // one rect per fragment (an inline element broken over lines has several)
+        let h = ph(it);
+        let sc = h.scroll;
+        let l = h.layout();
+        let (dx, dy) = if l.find_box(n).is_some_and(|b| b.fixed) { (0.0, 0.0) } else { sc };
+        let rects = l.rects.get(&n).cloned().unwrap_or_default();
+        if rects.is_empty() {
+            let r = if ph(it).node_rect(n).is_some() { vec![client_rect(it, n)] } else { vec![] };
+            return Ok(it.new_array(r));
+        }
+        let vals = rects.into_iter().map(|r| rect_obj(it, r.x - dx, r.y - dy, r.w, r.h)).collect();
+        Ok(it.new_array(vals))
     });
     it.define_method(el, "scrollIntoView", 1, |it, this, _| {
         let n = this_node(it, &this)?;
@@ -1552,6 +1562,37 @@ fn insert_adjacent(h: &mut PageHost, n: NodeId, pos: &str, c: NodeId) {
 
 fn install_document_methods(it: &mut Interp, p: &DomProtos) {
     let d = &p.document;
+    // Where characters [start, end) of a text node are, for Range in prelude.js.
+    let text_rects = it.native("__textRects", 3, |it, _, args| {
+        let n = this_node(it, &arg(args, 0))?;
+        let start = it.to_number(&arg(args, 1))?.max(0.0) as usize;
+        let end = it.to_number(&arg(args, 2))?.max(0.0) as usize;
+        let h = ph(it);
+        let sc = h.scroll;
+        // Text is laid out per element: the parent's direct text, with this node's offset in it.
+        let Some(owner) = h.doc.parent(n) else { return Ok(it.new_array(vec![])) };
+        let mut text = String::new();
+        let mut base = None;
+        for &c in h.doc.children(owner) {
+            if c == n {
+                base = Some(text.encode_utf16().count());
+            }
+            if let NodeData::Text(t) = &h.doc.node(c).data {
+                text.push_str(t);
+            }
+        }
+        let base = base.unwrap_or(0);
+        let rects = h.layout().text_rects(owner, &text, base + start, base + end);
+        let vals = rects
+            .into_iter()
+            .map(|(r, fixed)| {
+                let (dx, dy) = if fixed { (0.0, 0.0) } else { sc };
+                rect_obj(it, r.x - dx, r.y - dy, r.w, r.h)
+            })
+            .collect();
+        Ok(it.new_array(vals))
+    });
+    d.set_hidden("__textRects", text_rects);
     it.define_method(d, "getElementById", 1, |it, _, args| {
         let id = it.to_str(&arg(args, 0))?;
         let f = ph(it).doc.get_element_by_id(&id);

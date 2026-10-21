@@ -195,3 +195,31 @@ describe('stacking', () => {
     expect(page.evaluate(() => hits)).toEqual(['over']);
   });
 });
+
+describe('Range', () => {
+  test('rects of characters in a text node', () => {
+    page.setContent(`<style>body{margin:0;font:16px monospace}</style><pre id=p>hello world</pre>`);
+    const r = page.evaluate(() => {
+      const t = document.getElementById('p').firstChild;
+      const at = (s, e) => { const r = document.createRange(); r.setEnd(t, e); r.setStart(t, s); return r.getBoundingClientRect(); };
+      const a = at(0, 1), b = at(1, 2), all = at(0, 11);
+      return { aw: a.width, bLeft: b.left, aRight: a.right, allW: all.width, h: a.height, text: (() => { const r = document.createRange(); r.setStart(t, 6); r.setEnd(t, 11); return String(r); })() };
+    });
+    expect(r.aw).toBeGreaterThan(0);
+    expect(Math.abs(r.bLeft - r.aRight)).toBeLessThan(0.01);
+    expect(Math.abs(r.allW - r.aw * 11)).toBeLessThan(0.5);
+    expect(r.h).toBeGreaterThan(0);
+    expect(r.text).toBe('world');
+  });
+
+  test('a range over wrapped text has a rect per line', () => {
+    page.setContent(`<style>body{margin:0;font:16px sans-serif}</style><div id=d style="width:60px">one two three four</div>`);
+    const n = page.evaluate(() => {
+      const r = document.createRange();
+      r.selectNodeContents(document.getElementById('d'));
+      return [r.getClientRects().length, document.getElementById('d').getClientRects().length];
+    });
+    expect(n[0]).toBeGreaterThan(1);
+    expect(n[1]).toBe(1);
+  });
+});

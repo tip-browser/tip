@@ -361,6 +361,68 @@ impl LayoutResult {
         }
         walk(self.root.as_ref()?, node)
     }
+
+    /// Where characters [start, end) of an element's own text are, one rect per line fragment,
+    /// with whether it's in a fixed box. `text` is the element's direct text children joined,
+    /// and offsets are UTF-16 units into it, as in the DOM. Text fragments are matched to it in
+    /// order, so whitespace that collapsed away falls between fragments; generated content that
+    /// isn't in it is skipped. A collapsed range gives a zero-width rect at its position.
+    pub fn text_rects(&self, owner: NodeId, text: &str, start: usize, end: usize) -> Vec<(Rect, bool)> {
+        fn frags<'a>(b: &'a LayoutBox, node: NodeId, fixed: bool, out: &mut Vec<(&'a TextFrag, bool)>) {
+            let fixed = fixed || b.fixed;
+            for l in &b.lines {
+                for t in &l.texts {
+                    if t.node == Some(node) {
+                        out.push((t, fixed));
+                    }
+                }
+            }
+            for c in &b.children {
+                frags(c, node, fixed, out);
+            }
+        }
+        let Some(root) = &self.root else { return vec![] };
+        let mut all = Vec::new();
+        frags(root, owner, false, &mut all);
+        // each fragment's UTF-16 range in `text`
+        let dom: Vec<u16> = text.encode_utf16().collect();
+        let mut at = 0;
+        let mut found = Vec::new();
+        for (t, fixed) in all {
+            let f: Vec<u16> = t.text.encode_utf16().collect();
+            if f.is_empty() {
+                continue;
+            }
+            let Some(i) = dom.get(at..).and_then(|rest| rest.windows(f.len()).position(|w| w == f.as_slice())) else { continue };
+            found.push((t, fixed, at + i, at + i + f.len()));
+            at += i + f.len();
+        }
+        // x of a UTF-16 offset within a fragment, scaled to its laid-out width
+        let x_at = |t: &TextFrag, units: usize| -> f32 {
+            let key = crate::text::FontKey::new(t.style.font_family, t.style.font_weight, t.style.italic);
+            let measure = |s: &str| crate::text::measure(key, t.style.font_size, s, t.style.letter_spacing);
+            let mut n = 0;
+            let prefix: String = t.text.chars().take_while(|c| {
+                n += c.len_utf16();
+                n <= units
+            }).collect();
+            let full = measure(&t.text);
+            if full <= 0.0 { t.x } else { t.x + t.w * (measure(&prefix) / full).min(1.0) }
+        };
+        let rect = |t: &TextFrag, fixed: bool, fs: usize, fe: usize, s: usize, e: usize| {
+            let x0 = x_at(t, s.clamp(fs, fe) - fs);
+            let x1 = x_at(t, e.clamp(fs, fe) - fs);
+            (Rect::new(x0, t.baseline - t.ascent, (x1 - x0).max(0.0), t.ascent + t.descent), fixed)
+        };
+        if start >= end {
+            // a caret position: in the first fragment that reaches it, or at the end of the last
+            return match found.iter().find(|f| f.3 >= start).or(found.last()) {
+                Some(&(t, fixed, fs, fe)) => vec![rect(t, fixed, fs, fe, start, start)],
+                None => vec![],
+            };
+        }
+        found.iter().filter(|f| start < f.3 && end > f.2).map(|&(t, fixed, fs, fe)| rect(t, fixed, fs, fe, start, end)).collect()
+    }
 }
 
 /// Lay out a document for a viewport.

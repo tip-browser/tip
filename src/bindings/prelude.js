@@ -710,6 +710,217 @@
   Object.defineProperty(g, 'Worker', { value: Worker, writable: true, configurable: true });
 })();
 
+// Range: boundary points in the DOM, and where the text between them is on screen (editors such as
+// CodeMirror measure characters this way).
+(() => {
+  'use strict';
+  if (typeof document === 'undefined' || typeof document.createRange === 'function') return;
+  const TEXT = 3;
+  const COMMENT = 8;
+  const isText = (n) => n.nodeType === TEXT || n.nodeType === COMMENT;
+  const lengthOf = (n) => (isText(n) ? (n.data || '').length : n.childNodes.length);
+  const indexOf = (n) => Array.prototype.indexOf.call(n.parentNode.childNodes, n);
+  const emptyRect = () => ({ x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0, toJSON() { return this; } });
+  const check = (n, offset) => {
+    if (!n) throw new TypeError("Failed to execute on 'Range': parameter 1 is not of type 'Node'.");
+    if (offset < 0 || offset > lengthOf(n)) throw new DOMException(`There is no child at offset ${offset}.`, 'IndexSizeError');
+  };
+  // Whether boundary point (a, ao) comes after (b, bo).
+  const after = (a, ao, b, bo) => {
+    if (a === b) return ao > bo;
+    const pos = b.compareDocumentPosition(a);
+    if (pos & 16) { // contained by
+      // a is inside b: compare b's child holding a with bo
+      let c = a;
+      while (c.parentNode !== b) c = c.parentNode;
+      return indexOf(c) >= bo;
+    }
+    if (pos & 8) { // contains
+      let c = b;
+      while (c.parentNode !== a) c = c.parentNode;
+      return ao > indexOf(c);
+    }
+    return !!(pos & 4); // following
+  };
+
+  class Range {
+    constructor() {
+      this.startContainer = document;
+      this.startOffset = 0;
+      this.endContainer = document;
+      this.endOffset = 0;
+    }
+    get collapsed() { return this.startContainer === this.endContainer && this.startOffset === this.endOffset; }
+    get commonAncestorContainer() {
+      let a = this.startContainer;
+      while (a && a !== this.endContainer && !(a.contains && a.contains(this.endContainer))) a = a.parentNode;
+      return a || document;
+    }
+    setStart(n, offset) {
+      check(n, offset);
+      this.startContainer = n;
+      this.startOffset = offset;
+      if (after(n, offset, this.endContainer, this.endOffset) || this.endContainer === document) this.collapse(true);
+    }
+    setEnd(n, offset) {
+      check(n, offset);
+      this.endContainer = n;
+      this.endOffset = offset;
+      if (after(this.startContainer, this.startOffset, n, offset) || this.startContainer === document) this.collapse(false);
+    }
+    setStartBefore(n) { this.setStart(n.parentNode, indexOf(n)); }
+    setStartAfter(n) { this.setStart(n.parentNode, indexOf(n) + 1); }
+    setEndBefore(n) { this.setEnd(n.parentNode, indexOf(n)); }
+    setEndAfter(n) { this.setEnd(n.parentNode, indexOf(n) + 1); }
+    selectNode(n) {
+      const p = n.parentNode;
+      const i = indexOf(n);
+      this.startContainer = this.endContainer = p;
+      this.startOffset = i;
+      this.endOffset = i + 1;
+    }
+    selectNodeContents(n) {
+      this.startContainer = this.endContainer = n;
+      this.startOffset = 0;
+      this.endOffset = lengthOf(n);
+    }
+    collapse(toStart = false) {
+      if (toStart) {
+        this.endContainer = this.startContainer;
+        this.endOffset = this.startOffset;
+      } else {
+        this.startContainer = this.endContainer;
+        this.startOffset = this.endOffset;
+      }
+    }
+    cloneRange() {
+      const r = new Range();
+      r.startContainer = this.startContainer;
+      r.startOffset = this.startOffset;
+      r.endContainer = this.endContainer;
+      r.endOffset = this.endOffset;
+      return r;
+    }
+    detach() {}
+    compareBoundaryPoints(how, other) {
+      const [a, ao] = how === 0 || how === 3 ? [this.startContainer, this.startOffset] : [this.endContainer, this.endOffset];
+      const [b, bo] = how === 0 || how === 1 ? [other.startContainer, other.startOffset] : [other.endContainer, other.endOffset];
+      if (a === b && ao === bo) return 0;
+      return after(a, ao, b, bo) ? 1 : -1;
+    }
+    isPointInRange(n, offset) {
+      return !after(this.startContainer, this.startOffset, n, offset) && !after(n, offset, this.endContainer, this.endOffset);
+    }
+    comparePoint(n, offset) {
+      if (after(this.startContainer, this.startOffset, n, offset)) return -1;
+      return after(n, offset, this.endContainer, this.endOffset) ? 1 : 0;
+    }
+    intersectsNode(n) {
+      const p = n.parentNode;
+      if (!p) return true;
+      const i = indexOf(n);
+      return after(p, i + 1, this.startContainer, this.startOffset) && after(this.endContainer, this.endOffset, p, i);
+    }
+    // The text nodes the range covers, in order, as [node, start, end].
+    _texts() {
+      const { startContainer: sc, startOffset: so, endContainer: ec, endOffset: eo } = this;
+      if (sc === ec && isText(sc)) return sc.nodeType === TEXT ? [[sc, so, eo]] : [];
+      const out = [];
+      let inside = false;
+      let done = false;
+      const visit = (n) => {
+        if (done) return;
+        if (n.nodeType === TEXT) {
+          const s = n === sc ? so : 0;
+          if (n === sc) inside = true;
+          if (n === ec) {
+            if (inside) out.push([n, s, eo]);
+            done = true;
+            return;
+          }
+          if (inside) out.push([n, s, n.data.length]);
+          return;
+        }
+        const kids = n.childNodes;
+        for (let i = 0; i <= kids.length && !done; i++) {
+          if (n === sc && i === so) inside = true;
+          if (n === ec && i === eo) {
+            done = true;
+            return;
+          }
+          if (i < kids.length) visit(kids[i]);
+        }
+      };
+      visit(this.commonAncestorContainer);
+      return out;
+    }
+    getClientRects() {
+      const rects = [];
+      for (const [n, s, e] of this._texts()) rects.push(...document.__textRects(n, s, e));
+      if (!rects.length && !this.collapsed) {
+        // no text: the elements it selects
+        const c = this.startContainer;
+        if (c === this.endContainer && !isText(c)) {
+          for (let i = this.startOffset; i < this.endOffset; i++) {
+            const k = c.childNodes[i];
+            if (k && k.getClientRects) rects.push(...k.getClientRects());
+          }
+        }
+      }
+      return rects;
+    }
+    getBoundingClientRect() {
+      const rects = this.getClientRects();
+      if (!rects.length) return emptyRect();
+      let { left, top, right, bottom } = rects[0];
+      for (const r of rects) {
+        left = Math.min(left, r.left);
+        top = Math.min(top, r.top);
+        right = Math.max(right, r.right);
+        bottom = Math.max(bottom, r.bottom);
+      }
+      return { x: left, y: top, width: right - left, height: bottom - top, left, top, right, bottom, toJSON() { return this; } };
+    }
+    toString() {
+      return this._texts().map(([n, s, e]) => n.data.slice(s, e)).join('');
+    }
+    insertNode(node) {
+      const c = this.startContainer;
+      if (c.nodeType === TEXT) {
+        const rest = c.splitText(this.startOffset);
+        c.parentNode.insertBefore(node, rest);
+      } else {
+        c.insertBefore(node, c.childNodes[this.startOffset] || null);
+      }
+    }
+    deleteContents() {
+      const texts = this._texts();
+      if (this.startContainer === this.endContainer && !isText(this.startContainer)) {
+        for (let i = this.endOffset - 1; i >= this.startOffset; i--) this.startContainer.removeChild(this.startContainer.childNodes[i]);
+      } else {
+        for (const [n, s, e] of texts) n.data = n.data.slice(0, s) + n.data.slice(e);
+      }
+      this.collapse(true);
+    }
+    createContextualFragment(html) {
+      const holder = document.createElement('div');
+      holder.innerHTML = html;
+      const f = document.createDocumentFragment();
+      while (holder.firstChild) f.appendChild(holder.firstChild);
+      return f;
+    }
+  }
+  Object.assign(Range, { START_TO_START: 0, START_TO_END: 1, END_TO_END: 2, END_TO_START: 3 });
+  Object.assign(Range.prototype, { START_TO_START: 0, START_TO_END: 1, END_TO_END: 2, END_TO_START: 3 });
+  Object.defineProperty(globalThis, 'Range', { value: Range, writable: true, configurable: true });
+  const proto = Object.getPrototypeOf(document);
+  Object.defineProperty(proto && proto !== Object.prototype ? proto : document, 'createRange', {
+    value: function createRange() { return new Range(); },
+    writable: true,
+    configurable: true,
+  });
+})();
+
 // WindowProxy for the parent / top window: frames by index or name (`parent.frames[n]`)
 Object.defineProperty(globalThis, '__tip_wrap_window', {
   value: (w) => {
