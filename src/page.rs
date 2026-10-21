@@ -846,7 +846,7 @@ impl PageHost {
         let rect = Rect::new(anchor.x, y, w, h);
         let current = self.selected_index(p.node).max(0) as usize;
         dl.items.push(paint::Item::SetFixed(false));
-        dl.items.push(paint::Item::Shadow { rect, radii: [8.0; 4], color: Color::rgba(0, 0, 0, 60), blur: 14.0 });
+        dl.items.push(paint::Item::Shadow { rect, radii: [8.0; 4], color: Color::rgba(0, 0, 0, 60), blur: 14.0, hole: None });
         dl.items.push(paint::Item::Rect { rect, color: Color::WHITE, radii: [8.0; 4] });
         dl.items.push(paint::Item::Ring { outer: rect, outer_radii: [8.0; 4], inner: rect.inflate(-1.0), inner_radii: [7.0; 4], color: Color::rgb(0xc8, 0xcc, 0xd4) });
         for (i, (_, label, disabled)) in opts.iter().enumerate().skip(p.first).take(rows) {

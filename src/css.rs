@@ -1230,69 +1230,15 @@ pub fn parse_hex_color(h: &str) -> Option<Color> {
     }
 }
 
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let h = ((h % 360.0) + 360.0) % 360.0 / 360.0;
-    let hue = |p: f32, q: f32, mut t: f32| {
-        if t < 0.0 {
-            t += 1.0;
-        }
-        if t > 1.0 {
-            t -= 1.0;
-        }
-        if t < 1.0 / 6.0 {
-            p + (q - p) * 6.0 * t
-        } else if t < 0.5 {
-            q
-        } else if t < 2.0 / 3.0 {
-            p + (q - p) * (2.0 / 3.0 - t) * 6.0
-        } else {
-            p
-        }
-    };
-    let (r, g, b) = if s == 0.0 {
-        (l, l, l)
-    } else {
-        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
-        let p = 2.0 * l - q;
-        (hue(p, q, h + 1.0 / 3.0), hue(p, q, h), hue(p, q, h - 1.0 / 3.0))
-    };
-    ((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
-}
-
 /// Parse a color from a slice of tokens (whitespace allowed).
 pub fn parse_color(toks: &[Tok]) -> Option<Color> {
+    parse_color_with(toks, None)
+}
+
+/// Parse a color; `current` is the value of `currentcolor`, also inside color functions.
+pub fn parse_color_with(toks: &[Tok], current: Option<Color>) -> Option<Color> {
     let toks: Vec<&Tok> = toks.iter().filter(|t| **t != Tok::Ws).collect();
-    match toks.first()? {
-        Tok::Hash(h) => parse_hex_color(h),
-        Tok::Ident(name) => named_color(&name.to_ascii_lowercase()),
-        Tok::Function(f) if matches!(f.as_str(), "rgb" | "rgba" | "hsl" | "hsla") => {
-            let mut nums: Vec<(f32, bool)> = Vec::new();
-            for t in &toks[1..] {
-                match t {
-                    Tok::Number(n) => nums.push((*n, false)),
-                    Tok::Percentage(n) => nums.push((*n, true)),
-                    Tok::Dimension(n, u) if u == "deg" => nums.push((*n, false)),
-                    Tok::Dimension(n, u) if u == "turn" => nums.push((*n * 360.0, false)),
-                    Tok::Ident(s) if s == "none" => nums.push((0.0, false)),
-                    Tok::RParen => break,
-                    _ => {}
-                }
-            }
-            if nums.len() < 3 {
-                return None;
-            }
-            let alpha = nums.get(3).map(|&(v, pct)| if pct { v / 100.0 } else { v }).unwrap_or(1.0);
-            let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
-            if f.starts_with("rgb") {
-                let ch = |(v, pct): (f32, bool)| if pct { (v * 2.55).round().clamp(0.0, 255.0) as u8 } else { v.round().clamp(0.0, 255.0) as u8 };
-                Some(Color::rgba(ch(nums[0]), ch(nums[1]), ch(nums[2]), a))
-            } else {
-                let (r, g, b) = hsl_to_rgb(nums[0].0, nums[1].0 / 100.0, nums[2].0 / 100.0);
-                Some(Color::rgba(r, g, b, a))
-            }
-        }
-        _ => None,
-    }
+    crate::css_color::parse(&toks, current)
 }
 
 pub fn named_color(name: &str) -> Option<Color> {
@@ -1478,5 +1424,17 @@ mod tests {
         assert_eq!(parse_color(&tokenize("#f00")), Some(Color::rgb(255, 0, 0)));
         assert_eq!(parse_color(&tokenize("rgba(0, 0, 255, 0.5)")), Some(Color::rgba(0, 0, 255, 128)));
         assert_eq!(parse_color(&tokenize("hsl(120 100% 50%)")), Some(Color::rgb(0, 255, 0)));
+        let c = |s: &str| parse_color(&tokenize(s));
+        assert_eq!(c("color-mix(in srgb, #000 1.57%, transparent)"), Some(Color::rgba(0, 0, 0, 4)));
+        assert_eq!(c("color-mix(in srgb, red, blue)"), Some(Color::rgb(128, 0, 128)));
+        assert_eq!(c("color-mix(in oklab, white 50%, transparent)"), Some(Color::rgba(255, 255, 255, 128)));
+        assert_eq!(c("hsl(from #0b0b0b h s l / 6%)"), Some(Color::rgba(11, 11, 11, 15)));
+        assert_eq!(c("rgb(from red r g calc(b + 255))"), Some(Color::rgb(255, 0, 255)));
+        assert_eq!(c("oklch(62.8% 0.2577 29.23)"), Some(Color::rgb(255, 0, 0)));
+        assert_eq!(c("oklab(1 0 0)"), Some(Color::rgb(255, 255, 255)));
+        assert_eq!(c("lab(54.29 80.82 69.91)"), Some(Color::rgb(255, 0, 0)));
+        assert_eq!(c("hwb(120 0% 0%)"), Some(Color::rgb(0, 255, 0)));
+        assert_eq!(c("color(srgb 0 0.5 1 / 50%)"), Some(Color::rgba(0, 128, 255, 128)));
+        assert_eq!(parse_color_with(&tokenize("color-mix(in oklab, currentColor 50%, transparent)"), Some(Color::rgb(0, 0, 255))), Some(Color::rgba(0, 0, 255, 128)));
     }
 }

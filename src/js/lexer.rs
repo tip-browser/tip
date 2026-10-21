@@ -279,9 +279,10 @@ impl<'a> Lexer<'a> {
                     // lex the expression up to its matching brace and capture its source
                     let begin = self.pos;
                     let mut depth = 1;
-                    let mut prev: Option<Tok> = None;
+                    let mut ctx = SlashCtx::default();
                     let src = loop {
-                        let t = self.next_token(prev.as_ref())?;
+                        let t = self.next_token(&ctx)?;
+                        ctx.push(&t.tok);
                         match t.tok {
                             Tok::Eof => return Err(self.err("unterminated template expression")),
                             Tok::Punct("{") => depth += 1,
@@ -293,7 +294,6 @@ impl<'a> Lexer<'a> {
                             }
                             _ => {}
                         }
-                        prev = Some(t.tok);
                     };
                     parts.push(TemplatePart::Expr { src, line });
                 }
@@ -471,6 +471,52 @@ impl<'a> Lexer<'a> {
     }
 }
 
+/// Tracks what `/` means next: after `)` it is division, except when that `)` closes the
+/// condition of `if` / `while` / `for` / `with`, where a statement (maybe a regex) follows:
+/// `if (x) /re/.test(s)`.
+#[derive(Default)]
+struct SlashCtx {
+    prev: Option<Tok>,
+    /// For each open `(`: whether it starts a statement condition.
+    parens: Vec<bool>,
+    /// For each open `{`: whether it is a block (statement position) rather than an object.
+    braces: Vec<bool>,
+    /// The last token closed a statement condition or a block: a statement may follow.
+    statement_next: bool,
+}
+
+impl SlashCtx {
+    fn regex_allowed(&self) -> bool {
+        self.statement_next || regex_allowed(self.prev.as_ref())
+    }
+
+    fn push(&mut self, t: &Tok) {
+        let after_condition = self.statement_next;
+        self.statement_next = false;
+        match t {
+            Tok::Punct("(") => {
+                let cond = matches!(&self.prev, Some(Tok::Keyword(k)) if matches!(*k, "if" | "while" | "for" | "with"));
+                self.parens.push(cond);
+            }
+            Tok::Punct(")") => self.statement_next = self.parens.pop().unwrap_or(false),
+            Tok::Punct("{") => {
+                // `{` in statement position opens a block; elsewhere it is an object literal
+                let block = after_condition
+                    || match &self.prev {
+                        None => true,
+                        Some(Tok::Punct(p)) => matches!(*p, ")" | ";" | "{" | "}" | "=>"),
+                        Some(Tok::Keyword(k)) => matches!(*k, "else" | "do" | "try" | "finally"),
+                        _ => false,
+                    };
+                self.braces.push(block);
+            }
+            Tok::Punct("}") => self.statement_next = self.braces.pop().unwrap_or(false),
+            _ => {}
+        }
+        self.prev = Some(t.clone());
+    }
+}
+
 fn regex_allowed(prev: Option<&Tok>) -> bool {
     match prev {
         None => true,
@@ -486,8 +532,15 @@ pub fn tokenize(src: &str, base_line: u32) -> Result<Vec<Token>, String> {
     let chars: Vec<char> = src.chars().collect();
     let mut lx = Lexer { src: &chars, pos: 0, line: 0, col: 0, base_line };
     let mut out: Vec<Token> = Vec::new();
+    let mut ctx = SlashCtx::default();
     loop {
-        let t = lx.next_token(out.last().map(|t| &t.tok))?;
+        let before = lx.pos;
+        let t = lx.next_token(&ctx)?;
+        if lx.pos == before && t.tok != Tok::Eof {
+            // never loop forever on input the lexer doesn't understand
+            return Err(format!("SyntaxError: unexpected input at line {}:{} ({:?})", lx.line + 1 + lx.base_line, lx.col + 1, t.tok));
+        }
+        ctx.push(&t.tok);
         let eof = t.tok == Tok::Eof;
         out.push(t);
         if eof {
@@ -498,8 +551,8 @@ pub fn tokenize(src: &str, base_line: u32) -> Result<Vec<Token>, String> {
 }
 
 impl Lexer<'_> {
-    /// Lex one token; `prev` decides whether `/` starts a regex.
-    fn next_token(&mut self, prev: Option<&Tok>) -> Result<Token, String> {
+    /// Lex one token; `ctx` decides whether `/` starts a regex.
+    fn next_token(&mut self, ctx: &SlashCtx) -> Result<Token, String> {
         let lx = self;
         let nl = lx.skip_trivia()?;
         let line = lx.line + lx.base_line;
@@ -548,7 +601,7 @@ impl Lexer<'_> {
                 }
             }
             Tok::PrivateName(s)
-        } else if c == '/' && regex_allowed(prev) {
+        } else if c == '/' && ctx.regex_allowed() {
             lx.bump();
             lx.read_regex()?
         } else {

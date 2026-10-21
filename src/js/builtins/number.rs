@@ -176,12 +176,6 @@ pub fn setup(it: &mut Interp) {
     it.define_method(&ctor, "isSafeInteger", 1, |_, _, args| Ok(Value::Bool(matches!(arg(args, 0), Value::Num(n) if n.is_finite() && n.fract() == 0.0 && n.abs() <= 9007199254740991.0))));
     it.define_method(&ctor, "isFinite", 1, |_, _, args| Ok(Value::Bool(matches!(arg(args, 0), Value::Num(n) if n.is_finite()))));
     it.define_method(&ctor, "isNaN", 1, |_, _, args| Ok(Value::Bool(matches!(arg(args, 0), Value::Num(n) if n.is_nan()))));
-    let g = it.global.clone();
-    for name in ["parseFloat", "parseInt"] {
-        if let Some(f) = g.get_own(name) {
-            ctor.set_hidden(name, f);
-        }
-    }
     it.define_method(&np, "toString", 1, |it, this, args| {
         let n = this_num(it, &this)?;
         let r = arg(args, 0);

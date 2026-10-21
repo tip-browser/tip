@@ -50,3 +50,17 @@ describe('Proxy', () => {
     expect(r).toBe('true 6,2,4 true read-only 20 function {"a":1}');
   });
 });
+
+describe('lexer', () => {
+  test('a slash after a statement\'s closing paren or brace starts a regex', () => {
+    const r = page.evaluate(`(() => {
+      const out = []; let e = "x";
+      for (let i = 1; i--;) if (e.indexOf("x") >= 0) { e = "y"; break }/^a\\.\\w* b$/.test("a.c b") && out.push("block");
+      if (true)/x/.test("x") && out.push("cond");
+      const o = { a: 8 }.a / 2, h = (function () { return 6 })() / 3;
+      out.push(o, h);
+      return out.join(" ");
+    })()`);
+    expect(r).toBe('block cond 4 2');
+  });
+});

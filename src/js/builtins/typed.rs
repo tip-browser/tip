@@ -113,15 +113,26 @@ pub fn setup(it: &mut Interp) {
             Ok(this)
         });
         c.set_hidden("BYTES_PER_ELEMENT", Value::Num(ty.size() as f64));
-        it.define_method(&c, "from", 1, move |it, _, args| {
-            let items = it.iterate_to_vec(&arg(args, 0))?;
+        let make = move |it: &mut Interp, items: &[Value]| -> R<Value> {
             let t = TypedKind { buf: Rc::new(RefCell::new(vec![0; items.len() * ty.size()])), offset: 0, len: items.len(), ty };
             for (i, v) in items.iter().enumerate() {
                 let n = it.to_number(v)?;
                 t.set(i, n);
             }
             Ok(Value::Obj(Obj::new(ObjKind::TypedArray(t), it.p.typed.get(ty.name()).cloned(), ty.name())))
+        };
+        it.define_method(&c, "from", 1, move |it, _, args| {
+            let mut items = it.iterate_to_vec(&arg(args, 0))?;
+            // optional map function (and its `this`)
+            let f = arg(args, 1);
+            if f.is_callable() {
+                for (i, v) in items.iter_mut().enumerate() {
+                    *v = it.call(&f, arg(args, 2), &[v.clone(), Value::Num(i as f64)])?;
+                }
+            }
+            make(it, &items)
         });
+        it.define_method(&c, "of", 0, move |it, _, args| make(it, args));
     }
     it.define_getter(&base, "length", |_, this, _| Ok(Value::Num(typed_of(&this).map(|t| t.len).unwrap_or(0) as f64)));
     it.define_getter(&base, "byteLength", |_, this, _| Ok(Value::Num(typed_of(&this).map(|t| t.len * t.ty.size()).unwrap_or(0) as f64)));

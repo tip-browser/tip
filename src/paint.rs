@@ -21,7 +21,9 @@ pub enum Item {
     Text { x: f32, baseline: f32, text: String, font: FontKey, size: f32, color: Color, letter_spacing: f32 },
     Image { rect: Rect, image: Rc<Image>, radii: [f32; 4], opacity: f32 },
     Gradient { rect: Rect, bg: Background, radii: [f32; 4], opacity: f32 },
-    Shadow { rect: Rect, radii: [f32; 4], color: Color, blur: f32 },
+    /// An outer shadow; nothing is drawn inside `hole` (the casting box's border box), so the
+    /// shadow doesn't show through a translucent background.
+    Shadow { rect: Rect, radii: [f32; 4], color: Color, blur: f32, hole: Option<(Rect, [f32; 4])> },
     Path { segs: Vec<Seg>, color: Color },
     /// Start a group composited with `opacity` (CSS opacity); `bounds` limits the work.
     PushLayer { bounds: Rect, opacity: f32 },
@@ -95,6 +97,9 @@ struct Builder<'a> {
     clip: Vec<Rect>,
     fixed: bool,
     opacity: f32,
+    /// The body box whose background color was propagated to the canvas (not painted again, so
+    /// negative z-index layers of the root context show above it).
+    canvas_body: *const LayoutBox,
 }
 
 fn radii_of(s: &ComputedStyle, r: Rect) -> [f32; 4] {
@@ -240,7 +245,7 @@ impl Builder<'_> {
         for sh in s.box_shadow.iter().filter(|sh| !sh.inset) {
             self.shadow(rect, radii, sh);
         }
-        if s.background_color.a > 0 {
+        if s.background_color.a > 0 && !std::ptr::eq(b, self.canvas_body) {
             let c = self.col(s.background_color);
             self.push(Item::Rect { rect, color: c, radii });
         }
@@ -248,9 +253,15 @@ impl Builder<'_> {
         for sh in s.box_shadow.iter().filter(|sh| sh.inset) {
             // approximate inset shadow with a ring
             let inner = Rect::new(rect.x + sh.x + sh.spread, rect.y + sh.y + sh.spread, rect.w - 2.0 * sh.spread, rect.h - 2.0 * sh.spread);
-            let c = self.col(sh.color.with_alpha_mul(0.6));
+            let c = self.col(if sh.blur > 0.0 { sh.color.with_alpha_mul(0.6) } else { sh.color });
+            let inner_radii = radii.map(|r| (r - sh.spread).max(0.0));
             self.push_clip(rect);
-            self.push(Item::Ring { outer: rect.inflate(sh.blur + 50.0), outer_radii: [0.0; 4], inner, inner_radii: radii, color: c });
+            if sh.x == 0.0 && sh.y == 0.0 {
+                // a ring that follows the rounded corners (e.g. a 1px inset hairline border)
+                self.push(Item::Ring { outer: rect, outer_radii: radii, inner, inner_radii, color: c });
+            } else {
+                self.push(Item::Ring { outer: rect.inflate(sh.blur + 50.0), outer_radii: [0.0; 4], inner, inner_radii, color: c });
+            }
             self.pop_clip();
         }
     }
@@ -258,7 +269,7 @@ impl Builder<'_> {
     fn shadow(&mut self, rect: Rect, radii: [f32; 4], sh: &Shadow) {
         let r = Rect::new(rect.x + sh.x - sh.spread, rect.y + sh.y - sh.spread, rect.w + 2.0 * sh.spread, rect.h + 2.0 * sh.spread);
         let c = self.col(sh.color);
-        self.push(Item::Shadow { rect: r, radii: radii.map(|v| v + sh.spread.max(0.0)), color: c, blur: sh.blur });
+        self.push(Item::Shadow { rect: r, radii: radii.map(|v| v + sh.spread.max(0.0)), color: c, blur: sh.blur, hole: Some((rect, radii)) });
     }
 
     fn borders(&mut self, s: &ComputedStyle, rect: Rect, bw: [f32; 4], first: bool, last: bool) {
@@ -494,7 +505,7 @@ impl Builder<'_> {
                 self.push(Item::Rect { rect: track, color: self.col(Color::rgb(0xd1, 0xd5, 0xdb)), radii: [track_h / 2.0; 4] });
                 self.push(Item::Rect { rect: Rect::new(track.x, track.y, (tx - track.x).max(0.0), track_h), color: accent, radii: [track_h / 2.0; 4] });
                 let th = Rect::new(tx - thumb / 2.0, cy - thumb / 2.0, thumb, thumb);
-                self.push(Item::Shadow { rect: th, radii: [thumb / 2.0; 4], color: Color::rgba(0, 0, 0, 50), blur: 2.0 });
+                self.push(Item::Shadow { rect: th, radii: [thumb / 2.0; 4], color: Color::rgba(0, 0, 0, 50), blur: 2.0, hole: None });
                 self.push(Item::Rect { rect: th, color: accent, radii: [thumb / 2.0; 4] });
                 let inner = th.inflate(-thumb * 0.28);
                 self.push(Item::Rect { rect: inner, color: self.col(Color::WHITE), radii: [inner.w / 2.0; 4] });
@@ -536,14 +547,23 @@ impl Builder<'_> {
     /// Paint a box's own decorations and in-flow content; positioned descendants are deferred
     /// into `layer`.
     fn paint_box(&mut self, b: &LayoutBox, layer: &mut Vec<Deferred>) {
-        let s = &b.style;
-        let bb = b.border_box();
-        if b.inner == Inner::InlineFlow || b.is_text() || b.inner == Inner::Break {
+        if self.decorations(b) {
+            self.contents(b, layer);
+        } else {
             // inline boxes are painted via their containing block's line boxes; descend for atomics
             for c in &b.children {
                 self.child(c, layer);
             }
-            return;
+        }
+    }
+
+    /// Paint a box's background, borders and replaced content. False for inline-level flow boxes,
+    /// which are painted through their containing block's lines.
+    fn decorations(&mut self, b: &LayoutBox) -> bool {
+        let s = &b.style;
+        let bb = b.border_box();
+        if b.inner == Inner::InlineFlow || b.is_text() || b.inner == Inner::Break {
+            return false;
         }
         if s.visible {
             let bw = [b.border.top, b.border.right, b.border.bottom, b.border.left];
@@ -592,6 +612,13 @@ impl Builder<'_> {
                 self.text(x, baseline, w, m, &ms);
             }
         }
+        true
+    }
+
+    /// Paint a box's in-flow descendants, line boxes, scrollbar and outline.
+    fn contents(&mut self, b: &LayoutBox, layer: &mut Vec<Deferred>) {
+        let s = &b.style;
+        let bb = b.border_box();
         let clips = b.is_scroll_container() && b.node.is_some();
         if clips {
             self.push_clip(b.padding_box());
@@ -679,11 +706,30 @@ impl Builder<'_> {
             self.push(Item::PushLayer { bounds, opacity: b.style.opacity.max(0.0) });
         }
         let mut layer: Vec<Deferred> = Vec::new();
-        self.paint_box(b, &mut layer);
+        // Negative z-index layers paint between this box's background and its contents
+        // (CSS 2.1 Appendix E): they are painted after the contents into a side buffer and
+        // spliced in at `mark`.
+        let has_contents = self.decorations(b);
+        let mark = self.list.items.len();
+        if has_contents {
+            self.contents(b, &mut layer);
+        } else {
+            for c in &b.children {
+                self.child(c, &mut layer);
+            }
+        }
+        let mut after: Option<Vec<Item>> = None;
         // Painted from the end: lowest z-index, then earliest in tree order, last in the vector.
         let by_paint_order = |a: &Deferred, b: &Deferred| (b.z, &b.order).cmp(&(a.z, &a.order));
         layer.sort_by(by_paint_order);
         while let Some(d) = layer.pop() {
+            if d.z < 0 && after.is_none() {
+                after = Some(self.list.items.split_off(mark));
+            } else if d.z >= 0 {
+                if let Some(rest) = after.take() {
+                    self.list.items.extend(rest);
+                }
+            }
             // SAFETY: deferred boxes borrow from the layout tree which outlives painting.
             let child = unsafe { &*d.b };
             let pushed = if let Some(c) = d.clip {
@@ -725,6 +771,9 @@ impl Builder<'_> {
                 self.clip.pop();
                 self.push(Item::PopClip);
             }
+        }
+        if let Some(rest) = after.take() {
+            self.list.items.extend(rest);
         }
         if layered {
             self.push(Item::PopLayer);
@@ -784,7 +833,7 @@ fn creates_layer(b: &LayoutBox) -> bool {
 /// Whether a layer confines its descendants' z-indexes (a stacking context). A positioned box with
 /// z-index auto doesn't.
 fn creates_stacking_context(b: &LayoutBox) -> bool {
-    b.style.opacity < 1.0 || b.style.z_index.is_some() || matches!(b.style.position, Position::Fixed | Position::Sticky)
+    b.style.opacity < 1.0 || b.style.z_index.is_some() || b.style.isolate || matches!(b.style.position, Position::Fixed | Position::Sticky)
 }
 
 /// Compute a destination rect for an image of size (iw, ih) within `r`.
@@ -806,9 +855,14 @@ fn fit_rect(r: Rect, iw: f32, ih: f32, fit: BgSize, _repeat: bool) -> Rect {
 }
 
 pub fn build_display_list(layout: &LayoutResult, env: &dyn PaintEnv) -> DisplayList {
-    let mut b = Builder { list: DisplayList::default(), env, clip: vec![], fixed: false, opacity: 1.0 };
+    let mut b = Builder { list: DisplayList::default(), env, clip: vec![], fixed: false, opacity: 1.0, canvas_body: std::ptr::null() };
     b.list.background = layout.canvas_background;
     if let Some(root) = &layout.root {
+        if root.style.background_color.a == 0 && root.style.background_images.is_empty() {
+            if let Some(body) = root.children.iter().find(|c| c.node.is_some_and(|n| env.document().is_some_and(|d| d.tag_is(n, "body")))) {
+                b.canvas_body = body;
+            }
+        }
         b.paint_context(root);
     }
     b.list
@@ -992,13 +1046,14 @@ pub fn render(list: &DisplayList, canvas: &mut Canvas, vp: &Viewport) {
                     Background::Url(_) => {}
                 }
             }
-            Item::Shadow { rect, radii, color, blur } => {
+            Item::Shadow { rect, radii, color, blur, hole } => {
                 let r = tf(*rect, fixed);
                 if r.inflate(blur * s * 2.0).intersect(&visible).is_empty() {
                     continue;
                 }
                 let p = raster::rounded_rect_path(r, radii.map(|v| v * s));
-                canvas.fill_path_blurred(&p, *color, blur * s);
+                let hole = hole.map(|(h, hr)| raster::rounded_rect_path(tf(h, fixed), hr.map(|v| v * s)));
+                canvas.fill_path_blurred(&p, *color, blur * s, hole.as_deref());
             }
             Item::Path { segs, color } => {
                 let mapped: Vec<Seg> = segs

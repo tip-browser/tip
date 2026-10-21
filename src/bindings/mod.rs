@@ -619,13 +619,6 @@ impl HostObject for NodeHost {
                 let cs = window::current_script(it);
                 return Some(Ok(cs));
             }
-            "fonts" if n == 0 => {
-                let o = it.new_object();
-                let p = crate::js::builtins::promise::promise_resolve(it, Value::Undefined).unwrap_or(Value::Undefined);
-                o.set_prop("ready", p);
-                o.set_prop("status", str_v("loaded"));
-                Value::Obj(o)
-            }
             _ => {
                 if is_el {
                     if REFLECTED.contains(&k) {

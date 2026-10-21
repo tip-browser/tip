@@ -1,6 +1,7 @@
 //! Tip — a web browser engine written from scratch.
 
 pub mod css;
+pub mod css_color;
 pub mod dom;
 pub mod html;
 pub mod style;

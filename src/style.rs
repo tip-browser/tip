@@ -478,6 +478,8 @@ pub struct ComputedStyle {
     pub overflow_x: Overflow,
     pub overflow_y: Overflow,
     pub z_index: Option<i32>,
+    /// `isolation: isolate`: a stacking context even with z-index auto.
+    pub isolate: bool,
     pub cursor: Cursor,
     pub list_style: ListStyle,
     pub list_inside: bool,
@@ -572,6 +574,7 @@ impl Default for ComputedStyle {
             overflow_x: Overflow::Visible,
             overflow_y: Overflow::Visible,
             z_index: None,
+            isolate: false,
             cursor: Cursor::Default,
             list_style: ListStyle::Disc,
             list_inside: false,
@@ -1142,7 +1145,25 @@ fn apply_all(style: &mut ComputedStyle, parent: &ComputedStyle, decls: &[(Declar
     if !customs.is_empty() {
         let mut map = (*style.custom).clone();
         for d in customs {
-            map.insert(d.name.clone(), d.value.clone());
+            let kw: Vec<&Tok> = d.value.iter().filter(|t| **t != Tok::Ws).collect();
+            match kw.as_slice() {
+                // the initial value of a custom property is the guaranteed-invalid value, so
+                // var() falls back (Tailwind resets `--tw-*` this way)
+                [Tok::Ident(k)] if k.eq_ignore_ascii_case("initial") => {
+                    map.remove(&d.name);
+                }
+                [Tok::Ident(k)] if k.eq_ignore_ascii_case("inherit") || k.eq_ignore_ascii_case("unset") => match parent.custom.get(&d.name) {
+                    Some(v) => {
+                        map.insert(d.name.clone(), v.clone());
+                    }
+                    None => {
+                        map.remove(&d.name);
+                    }
+                },
+                _ => {
+                    map.insert(d.name.clone(), d.value.clone());
+                }
+            }
         }
         // resolve var() references inside custom properties (one level of nesting is enough in practice)
         let snapshot = map.clone();
@@ -1492,6 +1513,15 @@ fn px_value(c: &[Tok], cx: &Ctx) -> Option<f32> {
 fn number(c: &[Tok]) -> Option<f32> {
     match c {
         [Tok::Number(n)] => Some(*n),
+        // calc() over plain numbers, e.g. Tailwind's `z-index: calc(1 * -1)`
+        [Tok::Function(f), ..] if f == "calc" => {
+            let cx = Ctx { font_size: 16.0, root_font: 16.0, vp: (0.0, 0.0), parent_font: 16.0 };
+            let mut pos = 0;
+            match calc_sum(c, &mut pos, &cx)? {
+                CalcVal::Num(n) => Some(n),
+                CalcVal::Len(..) => None,
+            }
+        }
         _ => None,
     }
 }
@@ -1502,7 +1532,7 @@ fn color(c: &[Tok], current: Color) -> Option<Color> {
             return Some(current);
         }
     }
-    css::parse_color(c)
+    css::parse_color_with(c, Some(current))
 }
 
 fn border_style(s: &str) -> Option<BorderStyle> {
@@ -2023,6 +2053,12 @@ fn copy_prop(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
         "overflow-wrap" | "word-wrap" => cp!(overflow_wrap),
         "box-shadow" => cp!(box_shadow),
         "z-index" => cp!(z_index),
+        "isolation" => cp!(isolate),
+        "border-radius" => cp!(border_radius),
+        "border-top-left-radius" => dst.border_radius[0] = src.border_radius[0],
+        "border-top-right-radius" => dst.border_radius[1] = src.border_radius[1],
+        "border-bottom-right-radius" => dst.border_radius[2] = src.border_radius[2],
+        "border-bottom-left-radius" => dst.border_radius[3] = src.border_radius[3],
         "vertical-align" => cp!(vertical_align),
         "border-collapse" => cp!(border_collapse),
         "border-spacing" => cp!(border_spacing),
@@ -2623,6 +2659,7 @@ fn apply_decl(s: &mut ComputedStyle, parent: &ComputedStyle, name: &str, value: 
             }
         }
         "z-index" => s.z_index = number(first).map(|n| n as i32),
+        "isolation" => s.isolate = kw == "isolate",
         "cursor" => {
             // take the first keyword we understand (skip url() fallbacks)
             for c in &comps {

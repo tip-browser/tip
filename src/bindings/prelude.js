@@ -941,3 +941,49 @@ Object.defineProperty(globalThis, '__tip_wrap_window', {
   },
   configurable: true,
 });
+
+// FontFace / document.fonts (web fonts are not downloaded; faces report as loaded)
+(() => {
+  const g = globalThis;
+  class FontFace {
+    constructor(family, source, descriptors) {
+      this.family = String(family);
+      this.source = source;
+      const d = descriptors || {};
+      this.style = d.style || 'normal';
+      this.weight = String(d.weight || 'normal');
+      this.stretch = d.stretch || 'normal';
+      this.unicodeRange = d.unicodeRange || 'U+0-10FFFF';
+      this.display = d.display || 'auto';
+      this.status = 'unloaded';
+      this.loaded = Promise.resolve(this);
+    }
+    load() { this.status = 'loaded'; return Promise.resolve(this); }
+    get [Symbol.toStringTag]() { return 'FontFace'; }
+  }
+  class FontFaceSet extends EventTarget {
+    constructor() { super(); this._faces = new Set(); this.onloading = null; this.onloadingdone = null; this.onloadingerror = null; }
+    get size() { return this._faces.size; }
+    get status() { return 'loaded'; }
+    get ready() { return Promise.resolve(this); }
+    add(f) { this._faces.add(f); return this; }
+    delete(f) { return this._faces.delete(f); }
+    has(f) { return this._faces.has(f); }
+    clear() { this._faces.clear(); }
+    forEach(cb, thisArg) { for (const f of this._faces) cb.call(thisArg, f, f, this); }
+    values() { return this._faces.values(); }
+    keys() { return this._faces.values(); }
+    entries() { return this._faces.entries(); }
+    [Symbol.iterator]() { return this._faces.values(); }
+    check() { return true; }
+    load(font) {
+      const fam = String(font || '').replace(/^.*?\s(?=["'a-zA-Z][^\s]*$)/, '').replace(/["']/g, '').trim().toLowerCase();
+      return Promise.resolve([...this._faces].filter((f) => f.family.replace(/["']/g, '').toLowerCase() === fam));
+    }
+    get [Symbol.toStringTag]() { return 'FontFaceSet'; }
+  }
+  const fonts = new FontFaceSet();
+  Object.defineProperty(Document.prototype, 'fonts', { get() { return fonts; }, configurable: true });
+  Object.defineProperty(g, 'FontFace', { value: FontFace, writable: true, configurable: true });
+  Object.defineProperty(g, 'FontFaceSet', { value: FontFaceSet, writable: true, configurable: true });
+})();

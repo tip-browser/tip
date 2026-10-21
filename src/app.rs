@@ -1075,7 +1075,7 @@ impl App {
         if self.tablist.is_some() {
             let r = self.tablist_rect();
             let dev = Rect::new(r.x * s, r.y * s, r.w * s, r.h * s);
-            self.canvas.fill_path_blurred(&crate::raster::rounded_rect_path(dev.translate(0.0, 4.0 * s), [8.0 * s; 4]), Color::rgba(0, 0, 0, 70), 10.0 * s);
+            self.canvas.fill_path_blurred(&crate::raster::rounded_rect_path(dev.translate(0.0, 4.0 * s), [8.0 * s; 4]), Color::rgba(0, 0, 0, 70), 10.0 * s, None);
             let (w, h) = (dev.w.round() as usize, dev.h.round() as usize);
             let tl = self.tablist.as_mut().unwrap();
             Self::render_region(&mut self.caches[3], &mut tl.page, w, h, s, 0);

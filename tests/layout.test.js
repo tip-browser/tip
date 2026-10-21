@@ -194,6 +194,27 @@ describe('stacking', () => {
     page.clickAt(50, 15); // over the inner box, under #over
     expect(page.evaluate(() => hits)).toEqual(['over']);
   });
+
+  test('negative z-index children paint under their stacking context\'s content', () => {
+    // A Tailwind-style button: the fill is an absolutely positioned -z-1 child of an isolated button.
+    page.setContent(`<style>body{margin:0}b{position:absolute;inset:0;background:#000;border-radius:inherit}
+      button{position:relative;isolation:isolate;border:0;padding:0;width:120px;height:40px;border-radius:12px;background:none}</style>
+      <button><b style="z-index:calc(1 * -1)"></b><i id=t style="display:block;width:40px;height:20px;background:rgb(0, 200, 0)"></i></button>`);
+    const t = page.evaluate(() => { const r = document.getElementById('t').getBoundingClientRect(); return [r.x + 5, r.y + 5]; });
+    expect(page.pixel(t[0], t[1])).toBe('rgb(0, 200, 0)');
+    expect(page.pixel(60, 36)).toBe('rgb(0, 0, 0)');
+    expect(page.pixel(1, 1)).toBe('rgb(255, 255, 255)'); // the rounded corner, inherited by the fill
+  });
+});
+
+describe('colors', () => {
+  test('color-mix, relative colors and oklch', () => {
+    page.setContent(`<div id=a style="color:red;background:color-mix(in oklab, currentColor 50%, white)"></div>
+      <div id=b style="background:hsl(from #0b0b0b h s l / 50%)"></div><div id=c style="background:oklch(62.8% 0.2577 29.23)"></div>
+      <div id=d style="--x:initial;background:var(--x, rgb(1, 2, 3))"></div>`);
+    expect(page.evaluate(() => ['a', 'b', 'c', 'd'].map(i => getComputedStyle(document.getElementById(i)).backgroundColor).join(' ; ')))
+      .toBe('rgb(255, 161, 145) ; rgba(11, 11, 11, 0.502) ; rgb(255, 0, 0) ; rgb(1, 2, 3)');
+  });
 });
 
 describe('Range', () => {

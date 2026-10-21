@@ -502,8 +502,9 @@ impl Canvas {
     }
 
     /// Fill a path with a blurred edge (used for box-shadow).
-    pub fn fill_path_blurred(&mut self, segs: &[Seg], c: Color, blur: f32) {
-        if blur < 0.5 {
+    /// Fill a path blurred by `blur` px, leaving out the area inside `hole`.
+    pub fn fill_path_blurred(&mut self, segs: &[Seg], c: Color, blur: f32, hole: Option<&[Seg]>) {
+        if blur < 0.5 && hole.is_none() {
             return self.fill_path(segs, c);
         }
         let b = Self::path_bounds(segs);
@@ -518,11 +519,20 @@ impl Canvas {
         let mut acc = Accum::new(w, h);
         acc.path(segs, x0 as f32, y0 as f32);
         let mut m: Vec<f32> = acc.finish().into_iter().map(|v| v as f32).collect();
-        // three box blur passes approximate a gaussian with sigma = blur/2
-        let r = ((blur / 2.0) * 1.0).max(1.0) as usize;
-        for _ in 0..3 {
-            box_blur_h(&mut m, w, h, r);
-            box_blur_v(&mut m, w, h, r);
+        if blur >= 0.5 {
+            // three box blur passes approximate a gaussian with sigma = blur/2
+            let r = ((blur / 2.0) * 1.0).max(1.0) as usize;
+            for _ in 0..3 {
+                box_blur_h(&mut m, w, h, r);
+                box_blur_v(&mut m, w, h, r);
+            }
+        }
+        if let Some(hole) = hole {
+            let mut acc = Accum::new(w, h);
+            acc.path(hole, x0 as f32, y0 as f32);
+            for (v, inside) in m.iter_mut().zip(acc.finish()) {
+                *v *= (255 - inside.min(255) as u32) as f32 / 255.0;
+            }
         }
         let (cx0, cy0, cx1, cy1) = self.clip_bounds();
         for row in 0..h {

@@ -42,6 +42,14 @@ pub fn setup(it: &mut Interp) {
     iterator_setup(it);
     globals_setup(it);
     console_setup(it);
+    // Number.parseInt / parseFloat are the global functions themselves
+    if let Some(Value::Obj(num)) = g.get_own("Number") {
+        for name in ["parseFloat", "parseInt"] {
+            if let Some(f) = g.get_own(name) {
+                num.set_hidden(name, f);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- Function
@@ -483,8 +491,26 @@ fn globals_setup(it: &mut Interp) {
     });
     it.define_method(&reflect, "get", 2, |it, _, args| {
         let k = it.to_key(&arg(args, 1))?;
-        it.get(&arg(args, 0), &k)
+        match (arg(args, 0), args.get(2)) {
+            (Value::Obj(o), Some(receiver)) => it.get_from(&o, &k, receiver),
+            (Value::Obj(_), None) => it.get(&arg(args, 0), &k),
+            _ => throw!(it, "TypeError", "Reflect.get called on non-object"),
+        }
     });
+    // the rest behave like their Object counterparts, but insist on an object
+    for (name, len) in [("getOwnPropertyDescriptor", 2), ("isExtensible", 1), ("preventExtensions", 1)] {
+        it.define_method(&reflect, name, len, move |it, _, args| {
+            if !matches!(arg(args, 0), Value::Obj(_)) {
+                throw!(it, "TypeError", "Reflect.{name} called on non-object");
+            }
+            let g = Value::Obj(it.global.clone());
+            let object = it.get_str(&g, "Object")?;
+            let f = it.get_str(&object, name)?;
+            let r = it.call(&f, object, args)?;
+            Ok(if name == "preventExtensions" { Value::Bool(true) } else { r })
+        });
+    }
+    reflect.borrow_mut().props.insert(PropKey::Sym(it.sym_to_string_tag.clone()), Prop { value: Value::str("Reflect"), getter: None, setter: None, enumerable: false, writable: false, configurable: true });
     it.define_method(&reflect, "set", 3, |it, _, args| {
         let k = it.to_key(&arg(args, 1))?;
         it.set(&arg(args, 0), k, arg(args, 2))?;
