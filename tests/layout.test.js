@@ -173,3 +173,25 @@ describe('relative positioning of inline-level boxes', () => {
     expect(s.y).toBeLessThan(60);
   });
 });
+
+describe('stacking', () => {
+  test('a z-index inside a z-index auto box stacks above later positioned boxes', () => {
+    // A dropdown in a relatively positioned wrapper, over a list of relatively positioned rows
+    // that come after it: the wrapper isn't a stacking context, so z-index 10 wins.
+    page.setContent(`<style>body{margin:0}.row{position:relative;height:30px;width:100px}</style>
+      <div style="position:relative"><div id=menu style="position:absolute;top:0;left:0;width:200px;height:80px;z-index:10;background:#eee">menu</div></div>
+      <div id=rows><div class=row id=r1>one</div><div class=row id=r2>two</div></div>
+      <script>window.hits = []; document.addEventListener('click', e => hits.push(e.target.id));</script>`);
+    page.clickAt(50, 15); // over row one, under the menu
+    expect(page.evaluate(() => hits)).toEqual(['menu']);
+  });
+
+  test('a z-index inside a stacking context stays inside it', () => {
+    page.setContent(`<style>body{margin:0}</style>
+      <div style="position:relative;z-index:1"><div id=inner style="position:absolute;top:0;left:0;width:200px;height:80px;z-index:100;background:#eee">inner</div></div>
+      <div id=over style="position:relative;z-index:2;height:40px">over</div>
+      <script>window.hits = []; document.addEventListener('click', e => hits.push(e.target.id));</script>`);
+    page.clickAt(50, 15); // over the inner box, under #over
+    expect(page.evaluate(() => hits)).toEqual(['over']);
+  });
+});

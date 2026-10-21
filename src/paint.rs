@@ -655,7 +655,7 @@ impl Builder<'_> {
 
     fn child(&mut self, c: &LayoutBox, layer: &mut Vec<Deferred>) {
         if creates_layer(c) {
-            layer.push(Deferred { b: c as *const LayoutBox, z: c.style.z_index.unwrap_or(0), clip: if c.fixed { None } else { self.current_clip() }, opacity: self.opacity, order: layer.len() });
+            layer.push(Deferred { b: c as *const LayoutBox, z: c.style.z_index.unwrap_or(0), clip: if c.fixed { None } else { self.current_clip() }, opacity: self.opacity, order: vec![layer.len()] });
         } else {
             self.paint_box(c, layer);
         }
@@ -680,8 +680,10 @@ impl Builder<'_> {
         }
         let mut layer: Vec<Deferred> = Vec::new();
         self.paint_box(b, &mut layer);
-        layer.sort_by_key(|d| (d.z, d.order));
-        for d in layer {
+        // Painted from the end: lowest z-index, then earliest in tree order, last in the vector.
+        let by_paint_order = |a: &Deferred, b: &Deferred| (b.z, &b.order).cmp(&(a.z, &a.order));
+        layer.sort_by(by_paint_order);
+        while let Some(d) = layer.pop() {
             // SAFETY: deferred boxes borrow from the layout tree which outlives painting.
             let child = unsafe { &*d.b };
             let pushed = if let Some(c) = d.clip {
@@ -696,7 +698,25 @@ impl Builder<'_> {
             let saved = self.opacity;
             self.opacity = d.opacity;
             let saved_stack = if child.fixed { Some(std::mem::take(&mut self.clip)) } else { None };
-            self.paint_context(child);
+            if creates_stacking_context(child) {
+                self.paint_context(child);
+            } else {
+                // Positioned with z-index auto: painted here, but its positioned descendants
+                // belong to this stacking context (CSS 2.1 Appendix E), so a z-index inside it
+                // competes with everything here, and its z-index auto descendants keep their
+                // place in tree order.
+                let mut inner: Vec<Deferred> = Vec::new();
+                self.paint_box(child, &mut inner);
+                if !inner.is_empty() {
+                    for mut i in inner {
+                        let mut order = d.order.clone();
+                        order.extend_from_slice(&i.order);
+                        i.order = order;
+                        layer.push(i);
+                    }
+                    layer.sort_by(by_paint_order);
+                }
+            }
             if let Some(s) = saved_stack {
                 self.clip = s;
             }
@@ -750,7 +770,8 @@ struct Deferred {
     z: i32,
     clip: Option<Rect>,
     opacity: f32,
-    order: usize,
+    /// Tree order: the index path through the z-index auto boxes it was found in.
+    order: Vec<usize>,
 }
 
 fn creates_layer(b: &LayoutBox) -> bool {
@@ -758,6 +779,12 @@ fn creates_layer(b: &LayoutBox) -> bool {
         return false;
     }
     b.is_positioned() || b.style.opacity < 1.0
+}
+
+/// Whether a layer confines its descendants' z-indexes (a stacking context). A positioned box with
+/// z-index auto doesn't.
+fn creates_stacking_context(b: &LayoutBox) -> bool {
+    b.style.opacity < 1.0 || b.style.z_index.is_some() || matches!(b.style.position, Position::Fixed | Position::Sticky)
 }
 
 /// Compute a destination rect for an image of size (iw, ih) within `r`.
